@@ -1,0 +1,34 @@
+1. Ostatecznie wybrane modele:
+Musi:
+- obsługiwać jezyk polski
+- być na tyle mały żeby zmiescic sie na kosumenckiej GPU
+Ze względu na długie dokumenty szukałem modeli o długim kontekscie - 32k
+
+Takie modele to np. qwen2.5 gemma3, llama2-32k, commandr
+
+Ze względu na trening, który bedzie wymagal duzej ilosci Vramu, wybralem modele 
+ktore maja bardziej wydajny mechanizm atencji GQA
+https://huggingface.co/blog/wenbopan/long-context-fine-tuning
+ czyli qwen2.5 gemma3, commandr
+
+Sample Packing
+Flash attention - zeby liczenie atencji nie było n^2,a n
+
+2. Prompt tuning:
+https://huggingface.co/docs/peft/main/task_guides/clm-prompt-tuning
+
+
+3. schemat streszczenia
+
+dla pozwu:
+    - o jaka kwote
+    - o co wnosi
+    - jakie dowody , czyli jacy świadkowie, biegli, jakie dowody?
+
+dla odpowiedzi:    
+    - czy oddala powództwo
+    - jakie dowody , czyli jacy świadkowie, biegli, jakie dowody?
+
+
+Pomijamy punkty kierowane do sądu, w stylu wnosze o niewyznacznie posiedzenia,
+ wnosze o zasądzenie kosztów procesu
