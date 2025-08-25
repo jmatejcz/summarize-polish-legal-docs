@@ -17,3 +17,5 @@ results*
 data/
 
 data.zip
+
+__pycache__/
