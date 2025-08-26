@@ -11,6 +11,7 @@ literatura i analiza dziedziny -> dokumenty -> dostępne modele LLM -> wymagania
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync
+export PYTHONPATH=/path/to/repo/polish-legal-docs-summarization-and-generation
 ```
 
 
@@ -18,4 +19,6 @@ uv sync
 
 ```bash
 pip install huggingface_hub
+huggingface-hub login
 ```
+then paste the PAT from huggingface

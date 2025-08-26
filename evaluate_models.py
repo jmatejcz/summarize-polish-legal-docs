@@ -19,6 +19,7 @@ from metrics import calculate_metrics
 import nltk
 import gc
 
+
 # Ensure NLTK data is available
 try:
     nltk.data.find("tokenizers/punkt")
@@ -138,7 +139,6 @@ class UnifiedModelEvaluator(ABC):
         quantize: bool = True,
         quantize_bits: int = 4,
         results_dir: str = DEFAULT_PATHS["results"],
-        enable_thinking: bool = False,
     ):
         self.model_name = model_name
         self.config_name = config_name
@@ -146,7 +146,6 @@ class UnifiedModelEvaluator(ABC):
         self.adapter_type = adapter_type.lower()
         self.quantize = quantize
         self.quantize_bits = quantize_bits
-        self.enable_thinking = enable_thinking
 
         # Setup results directory
         self.results_dir = Path(results_dir) / self._get_model_family() / config_name
@@ -219,7 +218,8 @@ class UnifiedModelEvaluator(ABC):
         if "gemma" in self.model_name.lower():
             model_kwargs["attn_implementation"] = "eager"  # More stable for Gemma
             self.model = Gemma3ForCausalLM.from_pretrained(
-                self.model_name, **model_kwargs
+                self.model_name,
+                **model_kwargs,
             )
         else:
             self.model = AutoModelForCausalLM.from_pretrained(
@@ -274,20 +274,18 @@ class UnifiedModelEvaluator(ABC):
         )  # Rough approximation: 1 token ≈ 0.75 words
         return estimated_tokens / inference_time
 
-    def generate_summary(self, document_path: str) -> str:
+    def generate_summary(self, document_path: str, max_len: Optional[int]) -> str:
         """Generate summary for a document"""
         document_text = get_doc_text(path=document_path)
-
-        # Create messages using model-specific format
+        print(document_path)
+        if document_text:
+            print("SIEMAA")
+        if max_len:
+            document_text = document_text[:8000]
         messages = self._create_chat_messages(document_text)
-
-        # Apply chat template
         text = self._apply_chat_template(messages)
-
-        # Tokenize
         model_inputs = self.tokenizer([text], return_tensors="pt").to(self.model.device)
 
-        # Generate
         with torch.no_grad():
             generated_ids = self.model.generate(
                 **model_inputs,
@@ -296,15 +294,11 @@ class UnifiedModelEvaluator(ABC):
                 pad_token_id=self.tokenizer.eos_token_id,
                 eos_token_id=self.tokenizer.eos_token_id,
                 repetition_penalty=1.1,
-                temperature=0.1,
             )
-
-            # Extract only the generated part
             generated_ids = [
                 output_ids[len(input_ids) :]
                 for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
             ][0]
-
         response = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
         return response.strip()
 
@@ -313,7 +307,9 @@ class UnifiedModelEvaluator(ABC):
         documents_dir: str,
         summaries_dir: str,
         max_docs: Optional[int] = None,
+        max_len: Optional[int] = None,
         dataset_name: str = "dataset",
+        repeats: int = 1,
     ) -> tuple:
         """Evaluate on a specific dataset"""
         print(f"Loading model: {self.config_name}")
@@ -324,51 +320,49 @@ class UnifiedModelEvaluator(ABC):
         results = []
         inference_times = []
 
-        # Get document files
         doc_files = [f for f in os.listdir(documents_dir) if f.endswith(".txt")]
 
         if max_docs:
             doc_files = doc_files[:max_docs]
 
-        print(f"Evaluating {len(doc_files)} documents from {dataset_name}")
+        print(
+            f"Evaluating {len(doc_files)} documents from {dataset_name}, {repeats} times"
+        )
+        for i in range(repeats):
+            print(f"Iteration {i+1} / {repeats}")
+            for doc_file in tqdm(doc_files, desc=f"Evaluating {self.config_name}"):
+                doc_path = os.path.join(documents_dir, doc_file)
+                reference_path = os.path.join(summaries_dir, doc_file)
 
-        for doc_file in tqdm(doc_files, desc=f"Evaluating {self.config_name}"):
-            doc_path = os.path.join(documents_dir, doc_file)
-            reference_path = os.path.join(summaries_dir, doc_file)
+                print(doc_path)
+                if not os.path.exists(reference_path):
+                    print(f"Skipping {doc_file} - no reference summary found")
+                    continue
 
-            # Skip if reference summary doesn't exist
-            if not os.path.exists(reference_path):
-                print(f"Skipping {doc_file} - no reference summary found")
-                continue
+                with TimingContext() as inference_timer:
+                    generated_summary = self.generate_summary(doc_path, max_len)
 
-            # Generate summary with timing
-            with TimingContext() as inference_timer:
-                generated_summary = self.generate_summary(doc_path)
+                inference_time = inference_timer.duration
+                inference_times.append(inference_time)
 
-            inference_time = inference_timer.duration
-            inference_times.append(inference_time)
+                reference_summary = get_doc_text(reference_path)
 
-            # Get reference summary
-            reference_summary = get_doc_text(reference_path)
+                metrics = calculate_metrics(reference_summary, generated_summary)
 
-            # Calculate metrics
-            metrics = calculate_metrics(reference_summary, generated_summary)
+                results.append(
+                    {
+                        "filename": doc_file,
+                        "repeat_number": i,
+                        "generated_summary": generated_summary,
+                        "reference_summary": reference_summary,
+                        "inference_time_seconds": inference_time,
+                        "tokens_per_second": self._calculate_tokens_per_second(
+                            generated_summary, inference_time
+                        ),
+                        **metrics,
+                    }
+                )
 
-            # Add results with timing information
-            results.append(
-                {
-                    "filename": doc_file,
-                    "generated_summary": generated_summary,
-                    "reference_summary": reference_summary,
-                    "inference_time_seconds": inference_time,
-                    "tokens_per_second": self._calculate_tokens_per_second(
-                        generated_summary, inference_time
-                    ),
-                    **metrics,
-                }
-            )
-
-        # Unload model
         self.unload_model()
 
         return results, inference_times, dataset_name
@@ -380,18 +374,24 @@ class UnifiedModelEvaluator(ABC):
         processed_documents_dir: Optional[str] = None,
         processed_summaries_dir: Optional[str] = None,
         max_docs: Optional[int] = None,
+        max_len: Optional[int] = None,
         datasets_to_evaluate: Literal["test", "all"] = "test",
+        repeats: int = 1,
     ) -> Dict:
         """Run evaluation on specified datasets"""
 
         all_results = {}
-
         if datasets_to_evaluate == "test":
             test_docs_dir = test_documents_dir or DEFAULT_PATHS["test_documents"]
             test_sums_dir = test_summaries_dir or DEFAULT_PATHS["test_summaries"]
 
             results, times, name = self.evaluate_dataset(
-                test_docs_dir, test_sums_dir, max_docs, "test_set"
+                test_docs_dir,
+                test_sums_dir,
+                max_docs,
+                max_len,
+                "test_set",
+                repeats=repeats,
             )
             all_results["test"] = (results, times, name)
 
@@ -404,7 +404,7 @@ class UnifiedModelEvaluator(ABC):
             )
 
             results, times, name = self.evaluate_dataset(
-                proc_docs_dir, proc_sums_dir, max_docs, "all_set"
+                proc_docs_dir, proc_sums_dir, max_docs, "all_set", repeats=repeats
             )
             all_results["all"] = (results, times, name)
 
@@ -478,29 +478,25 @@ class StandardModelEvaluator(UnifiedModelEvaluator):
     def _create_chat_messages(self, document_text: str) -> List[Dict[str, str]]:
         """Create chat messages for standard models"""
         return [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": f"Streść poniższy dokument:\n{document_text}"},
         ]
 
     def _apply_chat_template(self, messages: List[Dict[str, str]]) -> str:
         """Apply chat template for standard models"""
-        try:
-            if "qwen3" in self.model_name.lower() and self.enable_thinking:
-                return self.tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                    enable_thinking=True,
-                )
-            else:
-                return self.tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                )
-        except Exception as e:
-            print(f"Chat template failed, using fallback format: {e}")
-            return f"System: {system_prompt}\n\nUser: Streść poniższy dokument:\n{messages[1]['content']}\n\nAssistant: "
+        if "qwen3" in self.model_name.lower():
+            return self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=False,
+            )
+        else:
+            return self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
 
 
 class GemmaModelEvaluator(UnifiedModelEvaluator):
@@ -510,22 +506,32 @@ class GemmaModelEvaluator(UnifiedModelEvaluator):
         """Create chat messages for Gemma models (combine system and user)"""
         return [
             {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": SYSTEM_PROMPT,
+                    }
+                ],
+            },
+            {
                 "role": "user",
-                "content": f"{system_prompt}\n\nStreść poniższy dokument:\n{document_text}",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"Streść poniższy dokument:\n{document_text}",
+                    }
+                ],
             },
         ]
 
     def _apply_chat_template(self, messages: List[Dict[str, str]]) -> str:
         """Apply chat template for Gemma models"""
-        try:
-            return self.tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-        except Exception as e:
-            print(f"Chat template failed, using fallback format: {e}")
-            return f"User: {messages[0]['content']}\n\nAssistant: "
+        return self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
 
 
 def create_evaluator(
@@ -668,16 +674,72 @@ def evaluate_specific_models(model_configs: List[Dict], **kwargs):
 
 def main():
     model_configs = [
+        # {
+        #     "model_name": "speakleash/Bielik-4.5B-v3.0-Instruct",
+        #     "config_name": "bielik_base",
+        #     "adapter_path": None,
+        #     "adapter_type": "none",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "speakleash/Bielik-4.5B-v3.0-Instruct",
+        #     "config_name": "bielik_agressive",
+        #     "adapter_path": "training/qlora/results/speakleash_bielik-4.5b-v3.0-instruct/agressive",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "speakleash/Bielik-4.5B-v3.0-Instruct",
+        #     "config_name": "bielik_moderate",
+        #     "adapter_path": "training/qlora/results/speakleash_bielik-4.5b-v3.0-instruct/moderate",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "speakleash/Bielik-4.5B-v3.0-Instruct",
+        #     "config_name": "bielik_conservative",
+        #     "adapter_path": "training/qlora/results/speakleash_bielik-4.5b-v3.0-instruct/conservative",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "Qwen/Qwen3-4B",
+        #     "config_name": "qwen3_agressive",
+        #     "adapter_path": "training/qlora/results/qwen_qwen3-4b/agressive",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "Qwen/Qwen2.5-7B-Instruct",
+        #     "config_name": "qwen2.5_base",
+        #     "adapter_path": None,
+        #     "adapter_type": "none",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "google/gemma-3-4b-it",
+        #     "config_name": "gemma3-base",
+        #     "adapter_path": None,
+        #     "adapter_type": "none",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "meta-llama/Llama-3.2-3B-Instruct",
+        #     "config_name": "llama3.2-base",
+        #     "adapter_path": None,
+        #     "adapter_type": "none",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "mistralai/Mistral-7B-Instruct-v0.3",
+        #     "config_name": "mistral-base",
+        #     "adapter_path": None,
+        #     "adapter_type": "none",
+        #     "quantize": True,
+        # },
         {
-            "model_name": "speakleash/Bielik-4.5B-v3.0-Instruct",
-            "config_name": "bielik_base",
-            "adapter_path": None,
-            "adapter_type": "none",
-            "quantize": True,
-        },
-        {
-            "model_name": "Qwen/Qwen3-4B",
-            "config_name": "qwen3_base",
+            "model_name": "CohereLabs/c4ai-command-r7b-12-2024",
+            "config_name": "commandr7-base",
             "adapter_path": None,
             "adapter_type": "none",
             "quantize": True,
@@ -687,9 +749,17 @@ def main():
 
     evaluate_specific_models(
         model_configs=model_configs,
-        datasets_to_evaluate=["test"],
+        datasets_to_evaluate="all",
+        # repeats=3
+        max_docs=40,
     )
 
 
 if __name__ == "__main__":
+    import warnings
+    import logging
+
+    logging.getLogger("transformers.modeling_utils").setLevel(logging.ERROR)
+    warnings.filterwarnings("ignore", message=".*Baseline not Found.*")
+
     main()

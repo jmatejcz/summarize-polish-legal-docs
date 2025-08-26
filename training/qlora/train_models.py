@@ -17,9 +17,9 @@ from transformers import (
 
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 from data_preprocess import (
-    system_prompt,
     create_train_data_for_prompt_tuning,
 )
+from evaluate_models import SYSTEM_PROMPT
 
 
 # Updated paths for train/test split
@@ -50,7 +50,7 @@ class QLoRADataset(Dataset):
             messages = [
                 {
                     "role": "user",
-                    "content": f"{system_prompt}\n\nStreść poniższy dokument:\n{input_text}",
+                    "content": f"{SYSTEM_PROMPT}\n\nStreść poniższy dokument:\n{input_text}",
                 },
                 {"role": "assistant", "content": target_text},
             ]
@@ -66,7 +66,7 @@ class QLoRADataset(Dataset):
             prompt_messages = [
                 {
                     "role": "user",
-                    "content": f"{system_prompt}\n\nStreść poniższy dokument:\n{input_text}",
+                    "content": f"{SYSTEM_PROMPT}\n\nStreść poniższy dokument:\n{input_text}",
                 }
             ]
             prompt_tokens = self.tokenizer.apply_chat_template(
@@ -96,7 +96,7 @@ class QLoRADataset(Dataset):
         else:
             # Standard format (with system role)
             messages = [
-                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": f"Streść poniższy dokument:\n{input_text}"},
                 {"role": "assistant", "content": target_text},
             ]
@@ -106,7 +106,7 @@ class QLoRADataset(Dataset):
                 messages, tokenize=False, add_generation_prompt=False
             )
             prompt_messages = [
-                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": f"Streść poniższy dokument:\n{input_text}"},
             ]
             prompt_text = self.tokenizer.apply_chat_template(
