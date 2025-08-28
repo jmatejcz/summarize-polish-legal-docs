@@ -5,6 +5,7 @@ description = "Add your description here"
 requires-python = ">=3.12"
 dependencies = [
     "bert-score>=0.3.13",
+    "bitsandbytes>=0.47.0",
     "huggingface-hub>=0.34.4",
     "loguru>=0.7.3",
     "mltk>=0.0.5",
