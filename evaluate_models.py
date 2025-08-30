@@ -6,14 +6,14 @@ import time
 from tqdm import tqdm
 from pathlib import Path
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, List, Union, Literal
+from typing import Optional, Dict, List, Literal
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
     BitsAndBytesConfig,
     Gemma3ForCausalLM,
 )
-from peft import PeftModel, PeftConfig
+from peft import PeftModel
 from data_preprocess import get_doc_text
 from metrics import calculate_metrics
 import nltk
@@ -22,6 +22,7 @@ import gc
 
 # Ensure NLTK data is available
 try:
+    nltk.download("punkt_tab")
     nltk.data.find("tokenizers/punkt")
     nltk.data.find("wordnet")
 except LookupError:
@@ -52,45 +53,6 @@ Zasady formatowania:
 - Nie dodawaj własnych interpretacji ani komentarzy – skup się na suchych faktach.
 - Jeżeli jest jasno opisane, dodaj do każdego dowodu w jakim celu/ na jaki fakt jest on podnoszony.
 
-===  PRZYKŁADY DLA POZWU === 
-
-1.  Wartość przedmiotu sporu: 2511,16 zł
-2.  Roszczenia powoda:
-        - Zasądzenie od pozwanego na rzecz powoda kwoty 2511,16 zł tytułem odszkodowania wraz z odsetkami za opóźnienie od 11.10.2021 r.
-3.  Wnioski dowodowe:
-        - Akta szkody nr 4897144/1.
-        - Faktura VAT nr FV/VB/127/23/I.
-        - Umowa cesji wraz z pełnomocnictwem.
-        - Opinia biegłego z zakresu wyceny pojazdów mechanicznych
-        
-===============================================
-1.  Wartość przedmiotu sporu: 1981,80 zł
-2.  Roszczenia powoda:
-    - zasądzenie od pozwanego kwoty 1981,80 zł tytułem odszkodowania wraz z odsetkami za opóźnienie od 18.07.2023 r.
-3.  Wnioski dowodowe:
-        - faktura VAT nr 90/2023.
-        - umowa cesji.
-        - dokumentacja szkody nr PL187923840131.
-        - Biegły z zakresu techniki samochodowej i wyceny pojazdów mechanicznych.
-
-===  PRZYKŁADY DLA ODPOWIEDZI NA POZEW === 
-
-1. Pozwany wnosi o oddalenie powództwa w całości.
-2. Wnioski dowodowe:
-    - Akta szkody nr 123213123/1.
-    - Ogólne Warunki Ubezpieczenia Casco Pojazdów (AC).
-
-===============================================
-1.  Pozwany wnosi o oddalenie powództwa w całości.
-2.  Wnioski dowodowe:
-        - Świadkowie: Jan Kowalski, Piotr Kowalski.
-        - Podsumowanie zgłosznia szkody.
-        - Kosztorys PZU S.A. (ustalenie wysokości szkody).
-        - Decyzja pozwanego PZU S.A. z dnia 01.02.2023 r. (ustalenie wysokości odszkodowania).
-        - Kosztorys naprawy sporządzy przez warsztat.
-        - Biegły z zakresu techniki samochodowej i wyceny pojazdów mechanicznych, na fakt ustalenia kosztów naprawy.
-
-        
 
 UWAGA: Pamiętaj o rozróżnieniu typu dokumentu:
 - Jeśli dokument to POZEW → użyj formatu z wartością przedmiotu sporu i roszczeniami powoda
@@ -208,7 +170,7 @@ class UnifiedModelEvaluator(ABC):
         print(f"Loading base model: {self.model_name}")
         model_kwargs = {
             "device_map": "auto",
-            "torch_dtype": torch.float16 if self.quantize else torch.bfloat16,
+            "torch_dtype": torch.bfloat16,
         }
 
         if quantization_config:
@@ -277,9 +239,6 @@ class UnifiedModelEvaluator(ABC):
     def generate_summary(self, document_path: str, max_len: Optional[int]) -> str:
         """Generate summary for a document"""
         document_text = get_doc_text(path=document_path)
-        print(document_path)
-        if document_text:
-            print("SIEMAA")
         if max_len:
             document_text = document_text[:8000]
         messages = self._create_chat_messages(document_text)
@@ -675,8 +634,15 @@ def evaluate_specific_models(model_configs: List[Dict], **kwargs):
 def main():
     model_configs = [
         # {
-        #     "model_name": "speakleash/Bielik-4.5B-v3.0-Instruct",
-        #     "config_name": "bielik_base",
+        #     "model_name": "speakleash/Bielik-1.5B-v3.0-Instruct",
+        #     "config_name": "bielik_base1.5_no_examples",
+        #     "adapter_path": None,
+        #     "adapter_type": "none",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "Qwen/Qwen2.5-3B-Instruct",
+        #     "config_name": "qwen2.5_3_base_no_examples",
         #     "adapter_path": None,
         #     "adapter_type": "none",
         #     "quantize": True,
@@ -705,53 +671,189 @@ def main():
         # {
         #     "model_name": "Qwen/Qwen3-4B",
         #     "config_name": "qwen3_agressive",
+        #     "adapter_path": "training/qlora/results/qwen_qwen3/agressive",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "Qwen/Qwen3-4B",
+        #     "config_name": "qwen3_moderate",
+        #     "adapter_path": "training/qlora/results/qwen_qwen3/moderate",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "Qwen/Qwen3-4B",
+        #     "config_name": "qwen3_conservative",
+        #     "adapter_path": "training/qlora/results/qwen_qwen3-4b/conservative",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "Qwen/Qwen3-4B",
+        #     "config_name": "qwen3_agressive",
         #     "adapter_path": "training/qlora/results/qwen_qwen3-4b/agressive",
         #     "adapter_type": "lora",
         #     "quantize": True,
         # },
         # {
         #     "model_name": "Qwen/Qwen2.5-7B-Instruct",
-        #     "config_name": "qwen2.5_base",
+        #     "config_name": "qwen2.5_base_no_examples",
         #     "adapter_path": None,
         #     "adapter_type": "none",
         #     "quantize": True,
         # },
         # {
         #     "model_name": "google/gemma-3-4b-it",
-        #     "config_name": "gemma3-base",
+        #     "config_name": "gemma3-4-base_no_examples",
+        #     "adapter_path": None,
+        #     "adapter_type": "none",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "google/gemma-3-1b-it",
+        #     "config_name": "gemma3-1-base_no_examples",
         #     "adapter_path": None,
         #     "adapter_type": "none",
         #     "quantize": True,
         # },
         # {
         #     "model_name": "meta-llama/Llama-3.2-3B-Instruct",
-        #     "config_name": "llama3.2-base",
+        #     "config_name": "llama3.2-base_no_examples",
         #     "adapter_path": None,
         #     "adapter_type": "none",
         #     "quantize": True,
         # },
         # {
         #     "model_name": "mistralai/Mistral-7B-Instruct-v0.3",
-        #     "config_name": "mistral-base",
+        #     "config_name": "mistral-base_no_examples",
         #     "adapter_path": None,
         #     "adapter_type": "none",
         #     "quantize": True,
         # },
+        # {
+        #     "model_name": "CohereLabs/c4ai-command-r7b-12-2024",
+        #     "config_name": "commandr7-base_no_examples",
+        #     "adapter_path": None,
+        #     "adapter_type": "none",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "google/gemma-3-1b-it",
+        #     "config_name": "gemma3_1_aggressive",
+        #     "adapter_path": "training/qlora/results/google_gemma-3.1b-it/aggressive",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "google/gemma-3-1b-it",
+        #     "config_name": "gemma3_1_conservative",
+        #     "adapter_path": "training/qlora/results/google_gemma-3.1b-it/conservative",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "google/gemma-3-1b-it",
+        #     "config_name": "gemma3_1_moderate",
+        #     "adapter_path": "training/qlora/results/google_gemma-3.1b-it/moderate",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # # mistralai_mistral-7b-instruct-v0.3 configs
+        # {
+        #     "model_name": "mistralai/mistral-7b-instruct-v0.3",
+        #     "config_name": "mistral_aggressive",
+        #     "adapter_path": "training/qlora/results/mistralai_mistral-7b-instruct-v0.3/aggressive",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "mistralai/mistral-7b-instruct-v0.3",
+        #     "config_name": "mistral_conservative",
+        #     "adapter_path": "training/qlora/results/mistralai_mistral-7b-instruct-v0.3/conservative",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "mistralai/mistral-7b-instruct-v0.3",
+        #     "config_name": "mistral_moderate",
+        #     "adapter_path": "training/qlora/results/mistralai_mistral-7b-instruct-v0.3/moderate",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # # qwen_qwen3-1.7b configs
         {
-            "model_name": "CohereLabs/c4ai-command-r7b-12-2024",
-            "config_name": "commandr7-base",
+            "model_name": "Qwen/Qwen3-1.7b",
+            "config_name": "qwen3-1.7b-base_no_examples",
             "adapter_path": None,
             "adapter_type": "none",
             "quantize": True,
         },
-        # Add more configurations as needed
+        # {
+        #     "model_name": "Qwen/Qwen3-1.7b",
+        #     "config_name": "qwen3_1_7b_aggressive",
+        #     "adapter_path": "training/qlora/results/qwen_qwen3-1.7b/aggressive",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "Qwen/Qwen3-1.7b",
+        #     "config_name": "qwen3_1_7b_conservative",
+        #     "adapter_path": "training/qlora/results/qwen_qwen3-1.7b/conservative",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "Qwen/Qwen3-1.7b",
+        #     "config_name": "qwen3_1_7b_moderate",
+        #     "adapter_path": "training/qlora/results/qwen_qwen3-1.7b/moderate",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # # qwen_qwen3-4b configs
+        # {
+        #     "model_name": "Qwen/Qwen3-4b",
+        #     "config_name": "qwen3_4b_aggressive",
+        #     "adapter_path": "training/qlora/results/qwen_qwen3-4b/aggressive",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "Qwen/Qwen3-4b",
+        #     "config_name": "qwen3_4b_conservative",
+        #     "adapter_path": "training/qlora/results/qwen_qwen3-4b/conservative",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "Qwen/Qwen3-4b",
+        #     "config_name": "qwen3_4b_moderate",
+        #     "adapter_path": "training/qlora/results/qwen_qwen3-4b/moderate",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "Qwen/Qwen3-4b",
+        #     "config_name": "qwen3_4b_ultra_conservative",
+        #     "adapter_path": "training/qlora/results/qwen_qwen3-4b/ultra_conservative",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+         {
+            "model_name": "Qwen/Qwen3-4b",
+            "config_name": "qwen3_4b_base-no-examples",
+            "adapter_path": None,
+            "adapter_type": "none",
+            "quantize": True,
+        },
     ]
 
     evaluate_specific_models(
         model_configs=model_configs,
         datasets_to_evaluate="all",
-        # repeats=3
+        # repeats=3,
         max_docs=40,
+        max_len=5000,
     )
 
 

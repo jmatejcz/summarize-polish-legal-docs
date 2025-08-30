@@ -69,6 +69,7 @@ class QLoRADataset(Dataset):
                     "content": f"{SYSTEM_PROMPT}\n\nStreść poniższy dokument:\n{input_text}",
                 }
             ]
+
             prompt_tokens = self.tokenizer.apply_chat_template(
                 prompt_messages,
                 tokenize=True,
@@ -100,7 +101,6 @@ class QLoRADataset(Dataset):
                 {"role": "user", "content": f"Streść poniższy dokument:\n{input_text}"},
                 {"role": "assistant", "content": target_text},
             ]
-
             # Two-step tokenization for standard models
             full_text = self.tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=False
@@ -169,7 +169,7 @@ def load_model_and_tokenizer(model_name, lora_r, lora_alpha, lora_dropout):
     }
 
     if "gemma" in model_name.lower():
-        model_args["attn_implementation"] = "flash_attention_2"
+        model_args["attn_implementation"] = "eager"
         base_model = Gemma3ForCausalLM.from_pretrained(model_name, **model_args)
     else:
         base_model = AutoModelForCausalLM.from_pretrained(model_name, **model_args)
@@ -230,11 +230,9 @@ def train_model(
 ):
     """Train a single QLoRA model"""
 
-    # Set seeds
     torch.manual_seed(seed)
     np.random.seed(seed)
 
-    # Create output directory
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
@@ -244,12 +242,10 @@ def train_model(
     logger.info(f"  Epochs: {epochs}, LR: {learning_rate}")
     logger.info(f"  Output: {output_dir}")
 
-    # Load model and tokenizer
     model, tokenizer = load_model_and_tokenizer(
         model_name, lora_r, lora_alpha, lora_dropout
     )
 
-    # Load training data
     logger.info("Loading training data...")
     train_data = create_train_data_for_prompt_tuning(
         documents_path=TRAIN_DOCUMENTS_PATH,
@@ -258,16 +254,13 @@ def train_model(
     )
     logger.info(f"Loaded {len(train_data)} training examples")
 
-    # Create dataset
     is_gemma = "gemma" in model_name.lower()
     train_dataset = QLoRADataset(train_data, tokenizer, max_length, is_gemma)
 
-    # Data collator
     data_collator = DataCollatorForLanguageModeling(
         tokenizer=tokenizer, mlm=False, pad_to_multiple_of=8
     )
 
-    # Training arguments
     training_args = TrainingArguments(
         output_dir=str(output_path),
         num_train_epochs=epochs,
@@ -291,7 +284,6 @@ def train_model(
         max_grad_norm=0.3,
     )
 
-    # Create trainer
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -299,16 +291,13 @@ def train_model(
         data_collator=data_collator,
     )
 
-    # Train
     logger.info("Starting training...")
     train_result = trainer.train()
 
-    # Save model
     logger.info("Saving model...")
     model.save_pretrained(output_path)
     tokenizer.save_pretrained(output_path)
 
-    # Save training info
     training_info = {
         "model_name": model_name,
         "lora_config": {
@@ -356,12 +345,11 @@ def main():
     parser.add_argument("--learning_rate", type=float, default=2e-4)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
-    parser.add_argument("--max_length", type=int, default=2500)
+    parser.add_argument("--max_length", type=int, default=5000)
     parser.add_argument("--seed", type=int, default=42)
 
     args = parser.parse_args()
 
-    # Train the model
     train_model(
         model_name=args.model_name,
         output_dir=args.output_dir,
