@@ -1,10 +1,5 @@
 #!/bin/bash
 
-# Simple multi-model, multi-config training and evaluation pipeline
-# Usage: ./run_pipeline.sh
-
-set -e
-
 RESULT_DIR="./training/qlora/results"
 
 echo "Base output: $RESULT_DIR"
@@ -12,9 +7,13 @@ echo ""
 
 # Define models to test
 declare -a MODELS=(
-    "Qwen/Qwen3-4B"
+    # "Qwen/Qwen3-4B"
     # "google/gemma-3-4b-it"
-    "speakleash/Bielik-4.5B-v3.0-Instruct"
+    # "CohereLabs/c4ai-command-r7b-12-2024"
+    # mistralai/Mistral-7B-Instruct-v0.3
+    # "speakleash/Bielik-4.5B-v3.0-Instruct"
+    # "Qwen/Qwen3-1.7B"
+    "google/gemma-3-1b-it"
 )
 
 # Define configurations to test

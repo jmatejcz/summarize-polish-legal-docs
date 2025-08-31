@@ -1,94 +1,76 @@
 #!/bin/bash
 
-echo "Starting Prompt Tuning Experiments..."
-echo "=================================="
-
-# Base parameters
-BASE_SCRIPT="summarize/prompt_tuning/training.py"
-BASE_OUTPUT_DIR="summarize/prompt_tuning/results"
-VAL_SPLIT=0.2
-BATCH_SIZE=1
+RESULT_DIR="./training/prompt_tuning/results"
+echo "Base output: $RESULT_DIR"
+echo ""
 
 # Define models to test
 MODELS=(
+    "google/gemma-3-4b-it"
+    "google/gemma-3-1b-it"
     "Qwen/Qwen3-4B"
+    "Qwen/Qwen3-1.7B"
     "speakleash/Bielik-4.5B-v3.0-Instruct"
+    "speakleash/Bielik-1.5B-v3.0-Instruct"
+    "CohereLabs/c4ai-command-r7b-12-2024"
+    # "mistralai/Mistral-7B-Instruct-v0.3"
+    "meta-llama/Llama-3.2-3B-Instruct"
 )
 
-# Define experiment configurations
-# Format: "name:num_virtual_tokens:epochs:learning_rate:gradient_accumulation_steps:use_quantization"
-CONFIGS=(
-    "conservative:10:4:0.1:8:true"
-    "moderate:20:5:0.12:6:true"
-    "aggressive:30:6:0.15:4:true"
+# Define configurations to test
+# params: name:num_virtual_tokens:epochs:learning_rate:gradient_accumulation_steps:batch_size
+declare -a CONFIGS=(
+    "conservative:10:4:0.1:8:1"
+    "moderate:20:5:0.12:6:2"
+    "aggressive:30:6:0.15:4:2"
 )
 
-# Function to extract model name for directory
-get_model_dir_name() {
-    local model=$1
-    if [[ $model == *"Qwen3-4B"* ]]; then
-        echo "qwen3-4b"
-    elif [[ $model == *"Bielik"* ]]; then
-        echo "bielik-4.5b"
-    else
-        echo "unknown"
-    fi
-}
+echo "✅ Found ${#MODELS[@]} models and ${#CONFIGS[@]} configurations to test"
+echo "Total experiments: $((${#MODELS[@]} * ${#CONFIGS[@]}))"
+echo ""
 
-experiment_num=1
+# Results tracking
+declare -a ALL_RESULTS=()
 
-for model in "${MODELS[@]}"; do
-    model_dir_name=$(get_model_dir_name "$model")
+# Train each model with each configuration
+for MODEL in "${MODELS[@]}"; do
+    # Create model-specific directory name
+    MODEL_DIR=$(echo "$MODEL" | sed 's|/|_|g' | tr '[:upper:]' '[:lower:]')
     
-    echo "Testing model: $model"
-    echo "===================="
+    echo "Testing Model: $MODEL"
+    echo "======================================="
+    echo ""
     
     for config in "${CONFIGS[@]}"; do
-        # Parse configuration
-        IFS=':' read -r config_name num_tokens epochs lr grad_steps use_quant <<< "$config"
+        IFS=':' read -r name num_tokens epochs lr grad_steps batch_size val_split <<< "$config"
         
-        # Create output directory name
-        output_dir="$BASE_OUTPUT_DIR/${model_dir_name}-${config_name}"
+        EXPERIMENT_DIR="${RESULT_DIR}/${MODEL_DIR}/${name}"
         
-        echo "Experiment $experiment_num: $(basename $model) - $config_name"
-        echo "Config: tokens=$num_tokens, epochs=$epochs, lr=$lr, grad_steps=$grad_steps, quant=$use_quant"
+        echo "🔧 Training: ${MODEL_DIR}/${name}"
+        echo " Config: tokens=$num_tokens, epochs=$epochs, lr=$lr"
+        echo " Batch size=$batch_size, grad_steps=$grad_steps, val_split=$val_split"
         
-        cmd="python $BASE_SCRIPT \
-            --model_name \"$model\" \
-            --output_dir \"$output_dir\" \
+        # Train this model+config combination
+        python3 training/prompt_tuning/train_models.py \
+            --model_name "$MODEL" \
+            --output_dir "$EXPERIMENT_DIR" \
             --num_virtual_tokens $num_tokens \
             --epochs $epochs \
             --learning_rate $lr \
-            --batch_size $BATCH_SIZE \
+            --batch_size 1 \
             --gradient_accumulation_steps $grad_steps \
-            --val_split $VAL_SPLIT"
         
-        if [ "$use_quant" = "true" ]; then
-            cmd="$cmd --use_quantization"
+        if [ $? -eq 0 ]; then
+            echo "✅ ${MODEL_DIR}/${name} training completed"
+            ALL_RESULTS+=("${MODEL_DIR}/${name}: SUCCESS")
+        else
+            echo "❌ ${MODEL_DIR}/${name} training failed"
+            ALL_RESULTS+=("${MODEL_DIR}/${name}: FAILED")
         fi
         
-        eval $cmd
-        
-        echo "Experiment $experiment_num completed!"
-        echo "Output saved to: $output_dir"
-        echo "--------------------"
-        
-        ((experiment_num++))
+        echo ""
     done
     
     echo ""
 done
 
-echo "All experiments completed successfully!"
-echo "======================================"
-echo "Total experiments run: $((experiment_num - 1))"
-echo ""
-echo "Results saved in $BASE_OUTPUT_DIR/ with the following structure:"
-echo "- qwen3-4b-conservative, qwen3-4b-moderate, qwen3-4b-aggressive, etc."
-echo "- bielik-4.5b-conservative, bielik-4.5b-moderate, bielik-4.5b-aggressive, etc."
-echo ""
-echo "Each model was tested with the same parameter configurations:"
-for config in "${CONFIGS[@]}"; do
-    IFS=':' read -r config_name num_tokens epochs lr grad_steps use_quant <<< "$config"
-    echo "  - $config_name: $num_tokens tokens, $epochs epochs, LR $lr, $grad_steps grad steps, quant=$use_quant"
-done

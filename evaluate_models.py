@@ -445,13 +445,13 @@ def main():
         #     "adapter_type": "none",
         #     "quantize": True,
         # },
-        {
-            "model_name": "meta-llama/Llama-3.2-3B-Instruct",
-            "config_name": "llama3.2-base_no_examples",
-            "adapter_path": None,
-            "adapter_type": "none",
-            "quantize": True,
-        },
+        # {
+        #     "model_name": "meta-llama/Llama-3.2-3B-Instruct",
+        #     "config_name": "llama3.2-base_no_examples",
+        #     "adapter_path": None,
+        #     "adapter_type": "none",
+        #     "quantize": True,
+        # },
         # {
         #     "model_name": "mistralai/Mistral-7B-Instruct-v0.3",
         #     "config_name": "mistral-base_no_examples",
@@ -574,13 +574,21 @@ def main():
         #     "adapter_type": "none",
         #     "quantize": True,
         # },
+        ### PROMPT TUNING
+        {
+            "model_name": "Qwen/Qwen3-1.7b",
+            "config_name": "prompt_tuning/qwen3_1_7b_aggressive",
+            "adapter_path": "training/prompt_tuning/results/qwen_qwen3-1.7b/aggressive",
+            "adapter_type": "prompt_tuning",
+            "quantize": True,
+        },
     ]
 
     evaluate_specific_models(
         model_configs=model_configs,
         datasets_to_evaluate="test",
         repeats=1,
-        max_docs=3,
+        # max_docs=3,
         max_len=5000,
     )
 
