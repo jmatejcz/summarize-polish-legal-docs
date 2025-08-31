@@ -4,28 +4,23 @@ import numpy as np
 from pathlib import Path
 from torch.utils.data import Dataset
 import argparse
-from transformers import (
-    AutoTokenizer,
-    TrainingArguments,
-    Trainer,
-    DataCollatorForLanguageModeling,
-    AutoModelForCausalLM,
-    BitsAndBytesConfig,
-)
+from transformers import TrainingArguments, Trainer, DataCollatorForLanguageModeling
 
 from peft import PromptTuningConfig, TaskType, get_peft_model
-from data_preprocess import system_prompt, create_train_data_for_prompt_tuning
+from data_preprocess import create_train_data_for_prompt_tuning
+from evaluate_models import create_preparer, BaseModelPrepare
 
-DOCUMENTS_PATH = "data/processed/documents/"
-SUMMARIES_PATH = "data/processed/summaries/done/"
+
+TRAIN_DOCUMENTS_PATH = "data/training/train/documents"
+TRAIN_SUMMARIES_PATH = "data/training/train/summaries"
 
 
 class PromptTuningDataset(Dataset):
-    """Dataset specifically designed for prompt tuning"""
+    """Dataset class that uses preparers for consistent chat formatting"""
 
-    def __init__(self, examples, tokenizer, max_length=4096):
+    def __init__(self, examples, preparer: BaseModelPrepare, max_length=4096):
         self.examples = examples
-        self.tokenizer = tokenizer
+        self.preparer = preparer
         self.max_length = max_length
 
     def __len__(self):
@@ -36,39 +31,23 @@ class PromptTuningDataset(Dataset):
         input_text = example["input"]
         target_text = example["target"]
 
-        # For prompt tuning, we create a simple completion format
-        # The virtual tokens will be automatically prepended by the PEFT model
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Streść poniższy dokument:\n{input_text}"},
-            {"role": "assistant", "content": target_text},
-        ]
+        messages = self.preparer.create_training_chat_messages(input_text, target_text)
 
-        full_text = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=False,  # False because we include assistant response
-        )
-        prompt_messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Streść poniższy dokument:\n{input_text}"},
-        ]
+        prompt_messages = self.preparer._create_chat_messages(input_text)
 
-        prompt_only = self.tokenizer.apply_chat_template(
-            prompt_messages,
-            tokenize=False,
-            add_generation_prompt=True,  # True to get the assistant marker
-        )
+        full_text = self.preparer._apply_chat_template(messages)
+        prompt_text = self.preparer._apply_chat_template(prompt_messages)
 
-        full_tokens = self.tokenizer(
+        full_tokens = self.preparer.tokenizer(
             full_text,
             truncation=True,
             max_length=self.max_length,
             padding=False,
             return_tensors="pt",
         )["input_ids"].squeeze(0)
-        prompt_tokens = self.tokenizer(
-            prompt_only,
+
+        prompt_tokens = self.preparer.tokenizer(
+            prompt_text,
             truncation=True,
             max_length=self.max_length,
             padding=False,
@@ -86,93 +65,67 @@ class PromptTuningDataset(Dataset):
         }
 
 
-class PromptTuningPipeline:
+class PromptTuningTrainer:
+    """Prompt tuning trainer that uses model preparers for consistency"""
+
     def __init__(
         self,
-        model_name="Qwen/Qwen3-4B",
-        output_dir="./output/prompt_tuning",
-        num_virtual_tokens=20,
-        torch_dtype="bfloat16",
-        seed=42,
-        use_quantization=True,
+        model_name: str,
+        output_dir: str = "./output/prompt_tuning",
+        num_virtual_tokens: int = 20,
+        seed: int = 42,
     ):
         self.model_name = model_name
         self.output_dir = output_dir
         self.num_virtual_tokens = num_virtual_tokens
-        self.torch_dtype = (
-            torch.bfloat16 if torch_dtype == "bfloat16" else torch.float16
-        )
         self.seed = seed
-        self.use_quantization = use_quantization
-
-        # Create output directory
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        self.preparer = None
+        self.model = None
 
         # Set random seed
         torch.manual_seed(seed)
         np.random.seed(seed)
 
-        # Load tokenizer and model
-        self._setup_model_and_tokenizer()
+        # Create output directory
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    def _setup_model_and_tokenizer(self):
-        """Initialize the model and tokenizer"""
-        logger.info(f"Loading tokenizer: {self.model_name}")
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+    def setup_model_and_prompt_tuning(self):
+        """Setup model with prompt tuning using preparer"""
+        logger.info(f"Setting up model with prompt tuning: {self.model_name}")
 
-        # Ensure pad token is set
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-
-        logger.info(f"Loading model: {self.model_name}")
-
-        # Setup quantization if enabled
-        model_kwargs = {
-            "torch_dtype": self.torch_dtype,
-            "device_map": "auto",
-        }
-
-        if self.use_quantization:
-            quantization_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=torch.float16,
-                bnb_4bit_use_double_quant=True,
-                bnb_4bit_quant_type="nf4",
-            )
-            model_kwargs["quantization_config"] = quantization_config
-
-        self.base_model = AutoModelForCausalLM.from_pretrained(
-            self.model_name, **model_kwargs
+        # Create preparer (this loads the base model with quantization)
+        self.preparer = create_preparer(
+            model_name=self.model_name, quantize=True, quantize_bits=4
         )
 
-        # Enable gradient checkpointing for memory efficiency
-        if hasattr(self.base_model, "gradient_checkpointing_enable"):
-            self.base_model.gradient_checkpointing_enable()
+        # Enable gradient checkpointing if available
+        if hasattr(self.preparer.model, "gradient_checkpointing_enable"):
+            self.preparer.model.gradient_checkpointing_enable()
 
-        # Configure prompt tuning
+        # Prompt tuning configuration
         peft_config = PromptTuningConfig(
             task_type=TaskType.CAUSAL_LM,
             num_virtual_tokens=self.num_virtual_tokens,
             tokenizer_name_or_path=self.model_name,
         )
 
-        # Apply prompt tuning to model
-        self.model = get_peft_model(self.base_model, peft_config)
+        # Apply prompt tuning to the preparer's model
+        self.model = get_peft_model(self.preparer.model, peft_config)
 
-        # Log trainable parameters
+        # Log parameters
         trainable_params, all_params = self.model.get_nb_trainable_parameters()
         logger.info(
             f"Trainable parameters: {trainable_params:,} ({100 * trainable_params / all_params:.2f}%)"
         )
         logger.info(f"Total parameters: {all_params:,}")
 
-    def _prepare_datasets(self, val_split=0.1, max_length=3072):
+    def _prepare_datasets(self, val_split: float = 0.1, max_length: int = 3072):
         """Prepare training and validation datasets"""
         logger.info("Loading training data from documents and summaries")
         train_data = create_train_data_for_prompt_tuning(
-            documents_path=DOCUMENTS_PATH,
-            target_path=SUMMARIES_PATH,
-            max_len=max_length,  # Reduced to leave room for virtual tokens and target
+            documents_path=TRAIN_DOCUMENTS_PATH,
+            target_path=TRAIN_SUMMARIES_PATH,
+            max_len=max_length,
         )
         logger.info(f"Loaded {len(train_data)} training examples")
 
@@ -195,28 +148,32 @@ class PromptTuningPipeline:
             f"Split data: {len(train_examples)} train, {len(eval_examples)} eval examples"
         )
 
-        train_dataset = PromptTuningDataset(train_examples, self.tokenizer, max_length)
-
+        # Create datasets using preparer
+        train_dataset = PromptTuningDataset(train_examples, self.preparer, max_length)
         eval_dataset = None
         if len(eval_examples) > 0:
-            eval_dataset = PromptTuningDataset(
-                eval_examples, self.tokenizer, max_length
-            )
+            eval_dataset = PromptTuningDataset(eval_examples, self.preparer, max_length)
 
         return train_dataset, eval_dataset
 
     def train(
         self,
-        val_split=0.1,
-        num_epochs=6,
-        learning_rate=0.3,  # Higher LR for prompt tuning
-        batch_size=2,
-        gradient_accumulation_steps=4,
-        max_length=3000,
-        warmup_ratio=0.1,
-        weight_decay=0.01,
+        val_split: float = 0.1,
+        num_epochs: int = 6,
+        learning_rate: float = 0.3,
+        batch_size: int = 2,
+        gradient_accumulation_steps: int = 4,
+        max_length: int = 3000,
+        warmup_ratio: float = 0.1,
+        weight_decay: float = 0.01,
     ):
         """Train the model with prompt tuning"""
+
+        if self.model is None:
+            raise RuntimeError(
+                "Model not setup. Call setup_model_and_prompt_tuning() first."
+            )
+
         logger.info("Starting prompt tuning training")
 
         # Prepare datasets
@@ -227,7 +184,7 @@ class PromptTuningPipeline:
 
         # Data collator for language modeling
         data_collator = DataCollatorForLanguageModeling(
-            tokenizer=self.tokenizer, mlm=False, pad_to_multiple_of=8
+            tokenizer=self.preparer.tokenizer, mlm=False, pad_to_multiple_of=8
         )
 
         # Training arguments optimized for prompt tuning
@@ -250,8 +207,7 @@ class PromptTuningPipeline:
             greater_is_better=False,
             remove_unused_columns=False,
             seed=self.seed,
-            bf16=self.torch_dtype == torch.bfloat16,
-            fp16=self.torch_dtype == torch.float16,
+            fp16=True,  # Use fp16 for memory efficiency
             dataloader_pin_memory=False,
             group_by_length=True,
             report_to=None,  # Disable wandb/tensorboard
@@ -273,9 +229,30 @@ class PromptTuningPipeline:
         # Save model and metrics
         logger.info("Saving model")
         self.model.save_pretrained(self.output_dir)
-        self.tokenizer.save_pretrained(self.output_dir)
+        self.preparer.tokenizer.save_pretrained(self.output_dir)
 
-        # Log and save metrics
+        # Save training info
+        training_info = {
+            "model_name": self.model_name,
+            "prompt_tuning_config": {
+                "num_virtual_tokens": self.num_virtual_tokens,
+            },
+            "training_config": {
+                "epochs": num_epochs,
+                "learning_rate": learning_rate,
+                "batch_size": batch_size,
+                "gradient_accumulation_steps": gradient_accumulation_steps,
+            },
+            "training_metrics": train_result.metrics,
+            "train_samples": len(train_dataset),
+        }
+
+        with open(Path(self.output_dir) / "training_info.json", "w") as f:
+            import json
+
+            json.dump(training_info, f, indent=2)
+
+        # Log metrics
         metrics = train_result.metrics
         trainer.log_metrics("train", metrics)
         trainer.save_metrics("train", metrics)
@@ -288,14 +265,50 @@ class PromptTuningPipeline:
             trainer.save_metrics("eval", eval_metrics)
 
         logger.info("Training complete!")
+        logger.info(f"Model saved to: {self.output_dir}")
+
         return self.model, trainer
 
 
-def parse_args():
-    """Parse command line arguments"""
-    parser = argparse.ArgumentParser(
-        description="Prompt Tuning Pipeline for Language Models"
+def train_prompt_tuning_model(
+    model_name: str,
+    output_dir: str,
+    num_virtual_tokens: int = 20,
+    epochs: int = 6,
+    learning_rate: float = 0.3,
+    batch_size: int = 2,
+    gradient_accumulation_steps: int = 4,
+    max_length: int = 3000,
+    val_split: float = 0.1,
+    seed: int = 42,
+) -> str:
+    """Train a prompt tuning model using preparers"""
+
+    trainer = PromptTuningTrainer(
+        model_name=model_name,
+        output_dir=output_dir,
+        num_virtual_tokens=num_virtual_tokens,
+        seed=seed,
     )
+
+    # Setup model with prompt tuning
+    trainer.setup_model_and_prompt_tuning()
+
+    # Train the model
+    trainer.train(
+        val_split=val_split,
+        num_epochs=epochs,
+        learning_rate=learning_rate,
+        batch_size=batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        max_length=max_length,
+    )
+
+    return output_dir
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Prompt Tuning using Preparers")
 
     # Model configuration
     parser.add_argument(
@@ -315,12 +328,6 @@ def parse_args():
         type=int,
         default=10,
         help="Number of virtual tokens for prompt tuning",
-    )
-    parser.add_argument(
-        "--use_quantization",
-        action="store_true",
-        default=False,
-        help="Enable 4-bit quantization for memory efficiency",
     )
 
     # Training hyperparameters
@@ -345,20 +352,14 @@ def parse_args():
         default=0.15,
         help="Fraction of data to use for validation",
     )
-
-    # Other parameters
-    parser.add_argument(
-        "--seed", type=int, default=42, help="Random seed for reproducibility"
-    )
     parser.add_argument(
         "--max_length", type=int, default=3000, help="Maximum sequence length"
     )
+    parser.add_argument(
+        "--seed", type=int, default=42, help="Random seed for reproducibility"
+    )
 
-    return parser.parse_args()
-
-
-def main():
-    args = parse_args()
+    args = parser.parse_args()
 
     logger.info("Starting Prompt Tuning Pipeline with the following configuration:")
     logger.info(f"Model: {args.model_name}")
@@ -366,31 +367,19 @@ def main():
     logger.info(f"Virtual tokens: {args.num_virtual_tokens}")
     logger.info(f"Epochs: {args.epochs}")
     logger.info(f"Learning rate: {args.learning_rate}")
-    logger.info(f"Gradient accumulation steps: {args.gradient_accumulation_steps}")
-    logger.info(f"Batch size: {args.batch_size}")
-    logger.info(f"Use quantization: {args.use_quantization}")
 
-    # Initialize the prompt tuning pipeline
-    # pipeline = PromptTuningPipeline(
-    #     model_name="Qwen/Qwen3-4B",
-    #     output_dir="./output/qwen3_prompt_tuning_fixed/1",
-    #     num_virtual_tokens=10,  # Start with fewer tokens
-    #     use_quantization=True,
-    # )
-
-    pipeline = PromptTuningPipeline(
+    # Train using the refactored approach
+    train_prompt_tuning_model(
         model_name=args.model_name,
         output_dir=args.output_dir,
         num_virtual_tokens=args.num_virtual_tokens,
-        use_quantization=args.use_quantization,
-    )
-
-    pipeline.train(
-        num_epochs=4,  # Fewer epochs for prompt tuning
-        learning_rate=0.1,  # High learning rate for prompt tuning
-        batch_size=1,
-        gradient_accumulation_steps=8,
-        val_split=0.15,
+        epochs=args.epochs,
+        learning_rate=args.learning_rate,
+        batch_size=args.batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        max_length=args.max_length,
+        val_split=args.val_split,
+        seed=args.seed,
     )
 
 
