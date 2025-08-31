@@ -59,6 +59,49 @@ UWAGA: Pamiętaj o rozróżnieniu typu dokumentu:
 - Jeśli dokument to ODPOWIEDŹ NA POZEW → użyj formatu ze stanowiskiem pozwanego 
 """
 
+SYSTEM_PROMPT_WITH_EXAMPLES = (
+    SYSTEM_PROMPT
+    + """
+===  PRZYKŁADY DLA POZWU === 
+
+1.  Wartość przedmiotu sporu: 2511,16 zł
+2.  Roszczenia powoda:
+        - Zasądzenie od pozwanego na rzecz powoda kwoty 2511,16 zł tytułem odszkodowania wraz z odsetkami za opóźnienie od 11.10.2021 r.
+3.  Wnioski dowodowe:
+        - Akta szkody nr 4897144/1.
+        - Faktura VAT nr FV/VB/127/23/I.
+        - Umowa cesji wraz z pełnomocnictwem.
+        - Opinia biegłego z zakresu wyceny pojazdów mechanicznych
+        
+===============================================
+1.  Wartość przedmiotu sporu: 1981,80 zł
+2.  Roszczenia powoda:
+    - zasądzenie od pozwanego kwoty 1981,80 zł tytułem odszkodowania wraz z odsetkami za opóźnienie od 18.07.2023 r.
+3.  Wnioski dowodowe:
+        - faktura VAT nr 90/2023.
+        - umowa cesji.
+        - dokumentacja szkody nr PL187923840131.
+        - Biegły z zakresu techniki samochodowej i wyceny pojazdów mechanicznych.
+
+===  PRZYKŁADY DLA ODPOWIEDZI NA POZEW === 
+
+1. Pozwany wnosi o oddalenie powództwa w całości.
+2. Wnioski dowodowe:
+    - Akta szkody nr 123213123/1.
+    - Ogólne Warunki Ubezpieczenia Casco Pojazdów (AC).
+
+===============================================
+1.  Pozwany wnosi o oddalenie powództwa w całości.
+2.  Wnioski dowodowe:
+        - Świadkowie: Jan Kowalski, Piotr Kowalski.
+        - Podsumowanie zgłosznia szkody.
+        - Kosztorys PZU S.A. (ustalenie wysokości szkody).
+        - Decyzja pozwanego PZU S.A. z dnia 01.02.2023 r. (ustalenie wysokości odszkodowania).
+        - Kosztorys naprawy sporządzy przez warsztat.
+        - Biegły z zakresu techniki samochodowej i wyceny pojazdów mechanicznych, na fakt ustalenia kosztów naprawy.
+"""
+)
+
 
 # Default paths - can be overridden
 DEFAULT_PATHS = {
@@ -72,64 +115,33 @@ DEFAULT_PATHS = {
 }
 
 
-class TimingContext:
-    """Context manager for timing operations"""
-
-    def __init__(self):
-        self.start_time = None
-        self.end_time = None
-        self.duration = None
-
-    def __enter__(self):
-        self.start_time = time.perf_counter()
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.end_time = time.perf_counter()
-        self.duration = self.end_time - self.start_time
-
-
-class UnifiedModelEvaluator(ABC):
-    """Unified base class for model evaluation supporting multiple adapter types"""
+class BaseModelPrepare(ABC):
 
     def __init__(
         self,
         model_name: str,
-        config_name: str,
-        adapter_path: Optional[str] = None,
-        adapter_type: str = "lora",  # "lora", "prompt_tuning", or "none"
         quantize: bool = True,
         quantize_bits: int = 4,
-        results_dir: str = DEFAULT_PATHS["results"],
     ):
         self.model_name = model_name
-        self.config_name = config_name
-        self.adapter_path = adapter_path
-        self.adapter_type = adapter_type.lower()
         self.quantize = quantize
         self.quantize_bits = quantize_bits
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        if not self.tokenizer:
+            raise ValueError("Tokenizer not laoded")
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        # Setup results directory
-        self.results_dir = Path(results_dir) / self._get_model_family() / config_name
-        self.results_dir.mkdir(parents=True, exist_ok=True)
+        quantization_config = self._get_quantization_config()
 
-        # Model components
-        self.model = None
-        self.tokenizer = None
+        print(f"Loading base model: {self.model_name}")
+        self.model_kwargs = {
+            "device_map": "auto",
+            "torch_dtype": torch.bfloat16,
+        }
 
-    def _get_model_family(self) -> str:
-        """Determine model family from model name"""
-        model_lower = self.model_name.lower()
-        if "gemma" in model_lower:
-            return "gemma"
-        elif "qwen" in model_lower:
-            return "qwen"
-        elif "bielik" in model_lower:
-            return "bielik"
-        elif "llama" in model_lower:
-            return "llama"
-        else:
-            return "other"
+        if quantization_config:
+            self.model_kwargs["quantization_config"] = quantization_config
 
     @abstractmethod
     def _create_chat_messages(self, document_text: str) -> List[Dict[str, str]]:
@@ -158,61 +170,9 @@ class UnifiedModelEvaluator(ABC):
         else:
             raise ValueError(f"Unsupported quantization bits: {self.quantize_bits}")
 
+    @abstractmethod
     def _load_base_model(self):
-        """Load base model and tokenizer"""
-        print(f"Loading tokenizer: {self.model_name}")
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-
-        quantization_config = self._get_quantization_config()
-
-        print(f"Loading base model: {self.model_name}")
-        model_kwargs = {
-            "device_map": "auto",
-            "torch_dtype": torch.bfloat16,
-        }
-
-        if quantization_config:
-            model_kwargs["quantization_config"] = quantization_config
-
-        # Use appropriate model class
-        if "gemma" in self.model_name.lower():
-            model_kwargs["attn_implementation"] = "eager"  # More stable for Gemma
-            self.model = Gemma3ForCausalLM.from_pretrained(
-                self.model_name,
-                **model_kwargs,
-            )
-        else:
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.model_name, **model_kwargs
-            )
-
-    def _load_adapter(self):
-        """Load adapter based on adapter type"""
-        if not self.adapter_path or not os.path.exists(self.adapter_path):
-            print("No adapter to load or adapter path doesn't exist")
-            return
-
-        print(f"Loading {self.adapter_type} adapter from {self.adapter_path}")
-
-        if self.adapter_type in ["lora", "prompt_tuning"]:
-            self.model = PeftModel.from_pretrained(self.model, self.adapter_path)
-
-            # Verify adapter loading
-            if hasattr(self.model, "get_nb_trainable_parameters"):
-                trainable, total = self.model.get_nb_trainable_parameters()
-                print(
-                    f"Adapter loaded: {trainable:,} trainable parameters ({100*trainable/total:.3f}%)"
-                )
-        else:
-            raise ValueError(f"Unsupported adapter type: {self.adapter_type}")
-
-    def load_model_and_tokenizer(self):
-        """Load model, tokenizer, and optional adapter"""
-        self._load_base_model()
-        self._load_adapter()
-        self.model.eval()
+        pass
 
     def unload_model(self):
         """Unload model and tokenizer to free up memory"""
@@ -224,7 +184,210 @@ class UnifiedModelEvaluator(ABC):
             self.tokenizer = None
         torch.cuda.empty_cache()
         gc.collect()
-        print(f"Unloaded model: {self.config_name}")
+
+
+class CommonModelPrepare(BaseModelPrepare):
+    """For models with standard chat structure"""
+
+    def __init__(self, model_name: str, quantize: bool = True, quantize_bits: int = 4):
+        super().__init__(model_name, quantize, quantize_bits)
+        self._load_base_model()
+
+    def _create_chat_messages(self, document_text: str) -> List[Dict[str, str]]:
+        """Create chat messages for standard models"""
+        return [
+            {"role": "system", "content": SYSTEM_PROMPT_WITH_EXAMPLES},
+            {"role": "user", "content": f"Streść poniższy dokument:\n{document_text}"},
+        ]
+
+    def create_training_chat_messages(self, document_text: str, target_text: str):
+        base_chat = self._create_chat_messages(document_text=document_text)
+        base_chat.append(
+            {
+                "role": "assistant",
+                "content": target_text,
+            }
+        )
+
+    def _load_base_model(self):
+        self.model = AutoModelForCausalLM.from_pretrained(
+            self.model_name, **self.model_kwargs
+        )
+
+    def _apply_chat_template(self, messages: List[Dict[str, str]]) -> str:
+
+        if "qwen3" in self.model_name.lower():
+            return self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=False,
+            )
+        else:
+            return self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+
+
+class GemmaModelPrepare(BaseModelPrepare):
+    """For gemma models"""
+
+    def __init__(self, model_name: str, quantize: bool = True, quantize_bits: int = 4):
+        super().__init__(model_name, quantize, quantize_bits)
+        self._load_base_model()
+
+    def _create_chat_messages(self, document_text: str):
+        """Create chat messages for Gemma models (combine system and user)"""
+        return [
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": SYSTEM_PROMPT_WITH_EXAMPLES,
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"Streść poniższy dokument:\n{document_text}",
+                    }
+                ],
+            },
+        ]
+
+    def create_training_chat_messages(self, document_text: str, target_text: str):
+        base_chat = self._create_chat_messages(document_text=document_text)
+        base_chat.append(
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": target_text}],
+            }
+        )
+
+    def _load_base_model(self):
+        self.model_kwargs["attn_implementation"] = "eager"  # More stable for Gemma
+        self.model = Gemma3ForCausalLM.from_pretrained(
+            self.model_name,
+            **self.model_kwargs,
+        )
+
+    def _apply_chat_template(self, messages: List[Dict[str, str]]) -> str:
+        """Apply chat template for Gemma models"""
+        return self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+
+
+def create_preparer(
+    model_name: str,
+    **kwargs,
+) -> BaseModelPrepare:
+    """Factory function to create appropriate evaluator based on model name"""
+    if "gemma" in model_name.lower():
+        return GemmaModelPrepare(
+            model_name=model_name,
+            **kwargs,
+        )
+    else:
+        return CommonModelPrepare(
+            model_name=model_name,
+            **kwargs,
+        )
+
+
+class TimingContext:
+    """Context manager for timing operations"""
+
+    def __init__(self):
+        self.start_time = None
+        self.end_time = None
+        self.duration = None
+
+    def __enter__(self):
+        self.start_time = time.perf_counter()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.end_time = time.perf_counter()
+        self.duration = self.end_time - self.start_time
+
+
+class ModelEvaluator:
+
+    def __init__(
+        self,
+        model_name: str,
+        config_name: str,
+        adapter_path: Optional[str] = None,
+        adapter_type: str = "lora",  # "lora", "prompt_tuning", or "none"
+        quantize: bool = True,
+        quantize_bits: int = 4,
+        results_dir: str = DEFAULT_PATHS["results"],
+    ):
+        self.model_name = model_name
+        self.config_name = config_name
+        self.adapter_path = adapter_path
+        self.adapter_type = adapter_type.lower()
+        self.quantize = quantize
+        self.quantize_bits = quantize_bits
+
+        self.preparer = create_preparer(
+            model_name=model_name, quantize=quantize, quantize_bits=quantize_bits
+        )
+
+        # Setup results directory
+        self.results_dir = Path(results_dir) / self._get_model_family() / config_name
+        self.results_dir.mkdir(parents=True, exist_ok=True)
+
+    def _get_model_family(self) -> str:
+        """Determine model family from model name"""
+        model_lower = self.model_name.lower()
+        if "gemma" in model_lower:
+            return "gemma"
+        elif "qwen" in model_lower:
+            return "qwen"
+        elif "bielik" in model_lower:
+            return "bielik"
+        elif "llama" in model_lower:
+            return "llama"
+        else:
+            return "other"
+
+    def load_model_and_tokenizer(self):
+        """Load model, tokenizer, and optional adapter"""
+        self.preparer._load_base_model()
+        self._load_adapter()
+        self.preparer.model.eval()
+
+    def _load_adapter(self):
+        """Load adapter based on adapter type"""
+        if not self.adapter_path or not os.path.exists(self.adapter_path):
+            print("No adapter to load or adapter path doesn't exist")
+            return
+
+        print(f"Loading {self.adapter_type} adapter from {self.adapter_path}")
+
+        if self.adapter_type in ["lora", "prompt_tuning"]:
+            self.preparer.model = PeftModel.from_pretrained(
+                self.preparer.model, self.adapter_path
+            )
+
+            # Verify adapter loading
+            if hasattr(self.preparer.model, "get_nb_trainable_parameters"):
+                trainable, total = self.preparer.model.get_nb_trainable_parameters()
+                print(
+                    f"Adapter loaded: {trainable:,} trainable parameters ({100*trainable/total:.3f}%)"
+                )
+        else:
+            raise ValueError(f"Unsupported adapter type: {self.adapter_type}")
 
     def _calculate_tokens_per_second(self, text: str, inference_time: float) -> float:
         """Estimate tokens per second (rough approximation)"""
@@ -241,24 +404,28 @@ class UnifiedModelEvaluator(ABC):
         document_text = get_doc_text(path=document_path)
         if max_len:
             document_text = document_text[:8000]
-        messages = self._create_chat_messages(document_text)
-        text = self._apply_chat_template(messages)
-        model_inputs = self.tokenizer([text], return_tensors="pt").to(self.model.device)
+        messages = self.preparer._create_chat_messages(document_text)
+        text = self.preparer._apply_chat_template(messages)
+        model_inputs = self.preparer.tokenizer([text], return_tensors="pt").to(
+            self.preparer.model.device
+        )
 
         with torch.no_grad():
-            generated_ids = self.model.generate(
+            generated_ids = self.preparer.model.generate(
                 **model_inputs,
                 max_new_tokens=512,
                 do_sample=False,
-                pad_token_id=self.tokenizer.eos_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
+                pad_token_id=self.preparer.tokenizer.eos_token_id,
+                eos_token_id=self.preparer.tokenizer.eos_token_id,
                 repetition_penalty=1.1,
             )
             generated_ids = [
                 output_ids[len(input_ids) :]
                 for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
             ][0]
-        response = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
+        response = self.preparer.tokenizer.decode(
+            generated_ids, skip_special_tokens=True
+        )
         return response.strip()
 
     def evaluate_dataset(
@@ -322,7 +489,7 @@ class UnifiedModelEvaluator(ABC):
                     }
                 )
 
-        self.unload_model()
+        self.preparer.unload_model()
 
         return results, inference_times, dataset_name
 
@@ -431,177 +598,6 @@ class UnifiedModelEvaluator(ABC):
         return final_metrics
 
 
-class StandardModelEvaluator(UnifiedModelEvaluator):
-    """Evaluator for standard models (Qwen, Llama, Bielik, etc.)"""
-
-    def _create_chat_messages(self, document_text: str) -> List[Dict[str, str]]:
-        """Create chat messages for standard models"""
-        return [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"Streść poniższy dokument:\n{document_text}"},
-        ]
-
-    def _apply_chat_template(self, messages: List[Dict[str, str]]) -> str:
-        """Apply chat template for standard models"""
-        if "qwen3" in self.model_name.lower():
-            return self.tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-                enable_thinking=False,
-            )
-        else:
-            return self.tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-
-
-class GemmaModelEvaluator(UnifiedModelEvaluator):
-    """Evaluator for Gemma models (no system role support)"""
-
-    def _create_chat_messages(self, document_text: str) -> List[Dict[str, str]]:
-        """Create chat messages for Gemma models (combine system and user)"""
-        return [
-            {
-                "role": "system",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": SYSTEM_PROMPT,
-                    }
-                ],
-            },
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": f"Streść poniższy dokument:\n{document_text}",
-                    }
-                ],
-            },
-        ]
-
-    def _apply_chat_template(self, messages: List[Dict[str, str]]) -> str:
-        """Apply chat template for Gemma models"""
-        return self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-
-
-def create_evaluator(
-    model_name: str,
-    config_name: str,
-    adapter_path: Optional[str] = None,
-    adapter_type: str = "lora",
-    **kwargs,
-) -> UnifiedModelEvaluator:
-    """Factory function to create appropriate evaluator based on model name"""
-    if "gemma" in model_name.lower():
-        return GemmaModelEvaluator(
-            model_name=model_name,
-            config_name=config_name,
-            adapter_path=adapter_path,
-            adapter_type=adapter_type,
-            **kwargs,
-        )
-    else:
-        return StandardModelEvaluator(
-            model_name=model_name,
-            config_name=config_name,
-            adapter_path=adapter_path,
-            adapter_type=adapter_type,
-            **kwargs,
-        )
-
-
-def evaluate_trained_models(
-    training_output_dir: str,
-    model_name: str,
-    adapter_type: str = "lora",
-    datasets_to_evaluate: Literal["test", "all"] = "test",
-    max_docs: Optional[int] = None,
-    **kwargs,
-):
-    """Evaluate all trained models from a training pipeline output directory"""
-    training_output_path = Path(training_output_dir)
-
-    if not training_output_path.exists():
-        print(f"Training output directory not found: {training_output_dir}")
-        return []
-
-    # Find all config directories
-    config_dirs = [
-        d
-        for d in training_output_path.iterdir()
-        if d.is_dir() and d.name != "__pycache__"
-    ]
-
-    if not config_dirs:
-        print(f"No trained model configs found in {training_output_dir}")
-        return []
-
-    print(f"Found {len(config_dirs)} trained configurations to evaluate:")
-    for config_dir in config_dirs:
-        print(f"  - {config_dir.name}")
-
-    all_results = []
-
-    # Evaluate each trained configuration
-    for config_dir in config_dirs:
-        config_name = config_dir.name
-
-        # Check if this directory contains a trained model
-        adapter_config_file = (
-            "adapter_config.json" if adapter_type == "lora" else "adapter_config.json"
-        )
-        if not (config_dir / adapter_config_file).exists():
-            print(f"Skipping {config_name} - no {adapter_config_file} found")
-            continue
-
-        print(f"\n{'='*60}")
-        print(f"EVALUATING: {config_name}")
-        print(f"{'='*60}")
-
-        # Create evaluator for this config
-        evaluator = create_evaluator(
-            model_name=model_name,
-            config_name=config_name,
-            adapter_path=str(config_dir),
-            adapter_type=adapter_type,
-            **kwargs,
-        )
-
-        # Run evaluation
-        metrics_dict = evaluator.run_evaluation(
-            datasets_to_evaluate=datasets_to_evaluate, max_docs=max_docs
-        )
-
-        # Collect metrics from all datasets
-        for dataset_key, metrics in metrics_dict.items():
-            all_results.append(metrics)
-
-    # Create comparison report
-    if all_results:
-        results_df = pd.DataFrame(all_results)
-
-        # Save comparison to CSV
-        comparison_path = (
-            Path(DEFAULT_PATHS["results"]) / f"{adapter_type}_models_comparison.csv"
-        )
-        results_df.to_csv(comparison_path, index=False)
-        print(f"\nDetailed comparison saved to: {comparison_path}")
-
-        return all_results
-    else:
-        print("❌ No successful evaluations completed.")
-        return []
-
-
 def evaluate_specific_models(model_configs: List[Dict], **kwargs):
     """Evaluate specific model configurations"""
     all_results = []
@@ -611,7 +607,7 @@ def evaluate_specific_models(model_configs: List[Dict], **kwargs):
         print(f"EVALUATING: {config['config_name']} ({i+1}/{len(model_configs)})")
         print(f"{'='*60}")
 
-        evaluator = create_evaluator(**config)
+        evaluator = ModelEvaluator(**config)
         metrics_dict = evaluator.run_evaluation(**kwargs)
 
         # Collect metrics from all datasets
@@ -717,13 +713,13 @@ def main():
         #     "adapter_type": "none",
         #     "quantize": True,
         # },
-        # {
-        #     "model_name": "meta-llama/Llama-3.2-3B-Instruct",
-        #     "config_name": "llama3.2-base_no_examples",
-        #     "adapter_path": None,
-        #     "adapter_type": "none",
-        #     "quantize": True,
-        # },
+        {
+            "model_name": "meta-llama/Llama-3.2-3B-Instruct",
+            "config_name": "llama3.2-base_no_examples",
+            "adapter_path": None,
+            "adapter_type": "none",
+            "quantize": True,
+        },
         # {
         #     "model_name": "mistralai/Mistral-7B-Instruct-v0.3",
         #     "config_name": "mistral-base_no_examples",
@@ -782,13 +778,13 @@ def main():
         #     "quantize": True,
         # },
         # # qwen_qwen3-1.7b configs
-        {
-            "model_name": "Qwen/Qwen3-1.7b",
-            "config_name": "qwen3-1.7b-base_no_examples",
-            "adapter_path": None,
-            "adapter_type": "none",
-            "quantize": True,
-        },
+        # {
+        #     "model_name": "Qwen/Qwen3-1.7b",
+        #     "config_name": "qwen3-1.7b-base_no_examples",
+        #     "adapter_path": None,
+        #     "adapter_type": "none",
+        #     "quantize": True,
+        # },
         # {
         #     "model_name": "Qwen/Qwen3-1.7b",
         #     "config_name": "qwen3_1_7b_aggressive",
@@ -839,20 +835,20 @@ def main():
         #     "adapter_type": "lora",
         #     "quantize": True,
         # },
-         {
-            "model_name": "Qwen/Qwen3-4b",
-            "config_name": "qwen3_4b_base-no-examples",
-            "adapter_path": None,
-            "adapter_type": "none",
-            "quantize": True,
-        },
+        #  {
+        #     "model_name": "Qwen/Qwen3-4b",
+        #     "config_name": "qwen3_4b_base-no-examples",
+        #     "adapter_path": None,
+        #     "adapter_type": "none",
+        #     "quantize": True,
+        # },
     ]
 
     evaluate_specific_models(
         model_configs=model_configs,
-        datasets_to_evaluate="all",
-        # repeats=3,
-        max_docs=40,
+        datasets_to_evaluate="test",
+        repeats=1,
+        max_docs=3,
         max_len=5000,
     )
 
