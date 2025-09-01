@@ -12,8 +12,10 @@ declare -a MODELS=(
     # "CohereLabs/c4ai-command-r7b-12-2024"
     # mistralai/Mistral-7B-Instruct-v0.3
     # "speakleash/Bielik-4.5B-v3.0-Instruct"
+    "speakleash/Bielik-1.5B-v3.0-Instruct"
     # "Qwen/Qwen3-1.7B"
-    "google/gemma-3-1b-it"
+    "meta-llama/Llama-3.2-3B-Instruct"
+    # "google/gemma-3-1b-it"
 )
 
 # Define configurations to test

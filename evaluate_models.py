@@ -10,6 +10,7 @@ from peft import PeftModel
 from data_preprocess import get_doc_text
 from metrics import calculate_metrics
 import nltk
+import gc
 
 from model_preparer import create_preparer
 
@@ -97,24 +98,28 @@ class ModelEvaluator:
         """Load model, tokenizer, and optional adapter"""
         self.preparer._load_base_model()
         self._load_adapter()
-        self.preparer.model.eval()
+        self.model.eval()
 
     def _load_adapter(self):
         """Load adapter based on adapter type"""
         if not self.adapter_path or not os.path.exists(self.adapter_path):
-            print("No adapter to load or adapter path doesn't exist")
+            print(
+                f"No adapter to load or adapter path doesn't exist, path: {self.adapter_path}"
+            )
             return
 
         print(f"Loading {self.adapter_type} adapter from {self.adapter_path}")
 
         if self.adapter_type in ["lora", "prompt_tuning"]:
-            self.preparer.model = PeftModel.from_pretrained(
+            if not self.preparer.model:
+                raise ValueError("Base Model not laoded")
+            self.model = PeftModel.from_pretrained(
                 self.preparer.model, self.adapter_path
             )
 
             # Verify adapter loading
-            if hasattr(self.preparer.model, "get_nb_trainable_parameters"):
-                trainable, total = self.preparer.model.get_nb_trainable_parameters()
+            if hasattr(self.model, "get_nb_trainable_parameters"):
+                trainable, total = self.model.get_nb_trainable_parameters()
                 print(
                     f"Adapter loaded: {trainable:,} trainable parameters ({100*trainable/total:.3f}%)"
                 )
@@ -133,17 +138,22 @@ class ModelEvaluator:
 
     def generate_summary(self, document_path: str, max_len: Optional[int]) -> str:
         """Generate summary for a document"""
+        if not self.preparer.model:
+            raise ValueError("Base Model not laoded")
+        if not self.preparer.tokenizer:
+            raise ValueError("Tokenizer  not laoded")
         document_text = get_doc_text(path=document_path)
         if max_len:
             document_text = document_text[:8000]
         messages = self.preparer._create_chat_messages(document_text)
         text = self.preparer._apply_chat_template(messages)
+
         model_inputs = self.preparer.tokenizer([text], return_tensors="pt").to(
-            self.preparer.model.device
+            self.model.device
         )
 
         with torch.no_grad():
-            generated_ids = self.preparer.model.generate(
+            generated_ids = self.model.generate(
                 **model_inputs,
                 max_new_tokens=512,
                 do_sample=False,
@@ -361,6 +371,7 @@ def evaluate_specific_models(model_configs: List[Dict], **kwargs):
 
 def main():
     model_configs = [
+        #### BASE MODELS
         # {
         #     "model_name": "speakleash/Bielik-1.5B-v3.0-Instruct",
         #     "config_name": "bielik_base1.5_no_examples",
@@ -373,55 +384,6 @@ def main():
         #     "config_name": "qwen2.5_3_base_no_examples",
         #     "adapter_path": None,
         #     "adapter_type": "none",
-        #     "quantize": True,
-        # },
-        # {
-        #     "model_name": "speakleash/Bielik-4.5B-v3.0-Instruct",
-        #     "config_name": "bielik_agressive",
-        #     "adapter_path": "training/qlora/results/speakleash_bielik-4.5b-v3.0-instruct/agressive",
-        #     "adapter_type": "lora",
-        #     "quantize": True,
-        # },
-        # {
-        #     "model_name": "speakleash/Bielik-4.5B-v3.0-Instruct",
-        #     "config_name": "bielik_moderate",
-        #     "adapter_path": "training/qlora/results/speakleash_bielik-4.5b-v3.0-instruct/moderate",
-        #     "adapter_type": "lora",
-        #     "quantize": True,
-        # },
-        # {
-        #     "model_name": "speakleash/Bielik-4.5B-v3.0-Instruct",
-        #     "config_name": "bielik_conservative",
-        #     "adapter_path": "training/qlora/results/speakleash_bielik-4.5b-v3.0-instruct/conservative",
-        #     "adapter_type": "lora",
-        #     "quantize": True,
-        # },
-        # {
-        #     "model_name": "Qwen/Qwen3-4B",
-        #     "config_name": "qwen3_agressive",
-        #     "adapter_path": "training/qlora/results/qwen_qwen3/agressive",
-        #     "adapter_type": "lora",
-        #     "quantize": True,
-        # },
-        # {
-        #     "model_name": "Qwen/Qwen3-4B",
-        #     "config_name": "qwen3_moderate",
-        #     "adapter_path": "training/qlora/results/qwen_qwen3/moderate",
-        #     "adapter_type": "lora",
-        #     "quantize": True,
-        # },
-        # {
-        #     "model_name": "Qwen/Qwen3-4B",
-        #     "config_name": "qwen3_conservative",
-        #     "adapter_path": "training/qlora/results/qwen_qwen3-4b/conservative",
-        #     "adapter_type": "lora",
-        #     "quantize": True,
-        # },
-        # {
-        #     "model_name": "Qwen/Qwen3-4B",
-        #     "config_name": "qwen3_agressive",
-        #     "adapter_path": "training/qlora/results/qwen_qwen3-4b/agressive",
-        #     "adapter_type": "lora",
         #     "quantize": True,
         # },
         # {
@@ -465,28 +427,120 @@ def main():
         #     "adapter_path": None,
         #     "adapter_type": "none",
         #     "quantize": True,
+        # }
+        #  {
+        #     "model_name": "Qwen/Qwen3-4b",
+        #     "config_name": "qwen3_4b_base-no-examples",
+        #     "adapter_path": None,
+        #     "adapter_type": "none",
+        #     "quantize": True,
+        # },
+        #### QLORA MODELS
+        # {
+        #     "model_name": "speakleash/Bielik-4.5B-v3.0-Instruct",
+        #     "config_name": "bielik_agressive",
+        #     "adapter_path": "training/qlora/results/speakleash_bielik-4.5b-v3.0-instruct/agressive",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
         # },
         # {
-        #     "model_name": "google/gemma-3-1b-it",
-        #     "config_name": "gemma3_1_aggressive",
-        #     "adapter_path": "training/qlora/results/google_gemma-3.1b-it/aggressive",
+        #     "model_name": "speakleash/Bielik-4.5B-v3.0-Instruct",
+        #     "config_name": "bielik_moderate",
+        #     "adapter_path": "training/qlora/results/speakleash_bielik-4.5b-v3.0-instruct/moderate",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "speakleash/Bielik-4.5B-v3.0-Instruct",
+        #     "config_name": "bielik_conservative",
+        #     "adapter_path": "training/qlora/results/speakleash_bielik-4.5b-v3.0-instruct/conservative",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "speakleash/Bielik-1.5B-v3.0-Instruct",
+        #     "config_name": "qlora/bielik_1.5_agressive",
+        #     "adapter_path": "training/qlora/results/speakleash_bielik-1.5b-v3.0-instruct/agressive",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "speakleash/Bielik-1.5B-v3.0-Instruct",
+        #     "config_name": "qlora/bielik_1.5_moderate",
+        #     "adapter_path": "training/qlora/results/speakleash_bielik-1.5b-v3.0-instruct/moderate",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "speakleash/Bielik-1.5B-v3.0-Instruct",
+        #     "config_name": "qlora/bielik_1.5_conservative",
+        #     "adapter_path": "training/qlora/results/speakleash_bielik-1.5b-v3.0-instruct/conservative",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "meta-llama/Llama-3.2-3B-Instruct",
+        #     "config_name": "qlora/llama3_2_3b_aggressive",
+        #     "adapter_path": "training/qlora/results/meta-llama_llama-3.2-3b-instruct/agressive",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "meta-llama/Llama-3.2-3B-Instruct",
+        #     "config_name": "qlora/llama3_2_3b_moderate",
+        #     "adapter_path": "training/qlora/results/meta-llama_llama-3.2-3b-instruct/moderate",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "meta-llama/Llama-3.2-3B-Instruct",
+        #     "config_name": "qlora/llama3_2_3b_conservative",
+        #     "adapter_path": "training/qlora/results/meta-llama_llama-3.2-3b-instruct/conservative",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "Qwen/Qwen3-4B",
+        #     "config_name": "qwen3_agressive",
+        #     "adapter_path": "training/qlora/results/qwen_qwen3/agressive",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "Qwen/Qwen3-4B",
+        #     "config_name": "qwen3_moderate",
+        #     "adapter_path": "training/qlora/results/qwen_qwen3/moderate",
+        #     "adapter_type": "lora",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "Qwen/Qwen3-4B",
+        #     "config_name": "qwen3_conservative",
+        #     "adapter_path": "training/qlora/results/qwen_qwen3-4b/conservative",
         #     "adapter_type": "lora",
         #     "quantize": True,
         # },
         # {
         #     "model_name": "google/gemma-3-1b-it",
-        #     "config_name": "gemma3_1_conservative",
-        #     "adapter_path": "training/qlora/results/google_gemma-3.1b-it/conservative",
+        #     "config_name": "qlora/gemma3_1_agressive",
+        #     "adapter_path": "training/qlora/results/google_gemma-3-1b-it/agressive",
         #     "adapter_type": "lora",
         #     "quantize": True,
         # },
-        # {
-        #     "model_name": "google/gemma-3-1b-it",
-        #     "config_name": "gemma3_1_moderate",
-        #     "adapter_path": "training/qlora/results/google_gemma-3.1b-it/moderate",
-        #     "adapter_type": "lora",
-        #     "quantize": True,
-        # },
+        {
+            "model_name": "google/gemma-3-1b-it",
+            "config_name": "qlora/gemma3_1_conservative",
+            "adapter_path": "training/qlora/results/google_gemma-3-1b-it/conservative",
+            "adapter_type": "lora",
+            "quantize": True,
+        },
+        {
+            "model_name": "google/gemma-3-1b-it",
+            "config_name": "qlora/gemma3_1_moderate",
+            "adapter_path": "training/qlora/results/google_gemma-3-1b-it/moderate",
+            "adapter_type": "lora",
+            "quantize": True,
+        },
         # # mistralai_mistral-7b-instruct-v0.3 configs
         # {
         #     "model_name": "mistralai/mistral-7b-instruct-v0.3",
@@ -560,34 +614,211 @@ def main():
         #     "adapter_type": "lora",
         #     "quantize": True,
         # },
+        #### PROMPT TUNING
+        # {
+        #     "model_name": "speakleash/Bielik-1.5B-v3.0-Instruct",
+        #     "config_name": "prompt_tuning/bielik_1_5b_aggressive",
+        #     "adapter_path": "training/prompt_tuning/results/speakleash_bielik-1.5b-v3.0-instruct/aggressive",
+        #     "adapter_type": "prompt_tuning",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "speakleash/Bielik-1.5B-v3.0-Instruct",
+        #     "config_name": "prompt_tuning/bielik_1_5b_moderate",
+        #     "adapter_path": "training/prompt_tuning/results/speakleash_bielik-1.5b-v3.0-instruct/moderate",
+        #     "adapter_type": "prompt_tuning",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "speakleash/Bielik-1.5B-v3.0-Instruct",
+        #     "config_name": "prompt_tuning/bielik_1_5b_conservative",
+        #     "adapter_path": "training/prompt_tuning/results/speakleash_bielik-1.5b-v3.0-instruct/conservative",
+        #     "adapter_type": "prompt_tuning",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "speakleash/Bielik-4.5B-v3.0-Instruct",
+        #     "config_name": "prompt_tuning/bielik_4_5b_aggressive",
+        #     "adapter_path": "training/prompt_tuning/results/speakleash_bielik-4.5b-v3.0-instruct/aggressive",
+        #     "adapter_type": "prompt_tuning",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "speakleash/Bielik-4.5B-v3.0-Instruct",
+        #     "config_name": "prompt_tuning/bielik_4_5b_moderate",
+        #     "adapter_path": "training/prompt_tuning/results/speakleash_bielik-4.5b-v3.0-instruct/moderate",
+        #     "adapter_type": "prompt_tuning",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "speakleash/Bielik-4.5B-v3.0-Instruct",
+        #     "config_name": "prompt_tuning/bielik_4_5b_conservative",
+        #     "adapter_path": "training/prompt_tuning/results/speakleash_bielik-4.5b-v3.0-instruct/conservative",
+        #     "adapter_type": "prompt_tuning",
+        #     "quantize": True,
+        # },
+        # # Qwen models
+        # {
+        #     "model_name": "Qwen/Qwen2.5-3B-Instruct",
+        #     "config_name": "prompt_tuning/qwen2_5_3b_aggressive",
+        #     "adapter_path": "training/prompt_tuning/results/qwen_qwen2.5-3b-instruct/aggressive",
+        #     "adapter_type": "prompt_tuning",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "Qwen/Qwen2.5-3B-Instruct",
+        #     "config_name": "prompt_tuning/qwen2_5_3b_moderate",
+        #     "adapter_path": "training/prompt_tuning/results/qwen_qwen2.5-3b-instruct/moderate",
+        #     "adapter_type": "prompt_tuning",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "Qwen/Qwen2.5-3B-Instruct",
+        #     "config_name": "prompt_tuning/qwen2_5_3b_conservative",
+        #     "adapter_path": "training/prompt_tuning/results/qwen_qwen2.5-3b-instruct/conservative",
+        #     "adapter_type": "prompt_tuning",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "Qwen/Qwen2.5-7B-Instruct",
+        #     "config_name": "prompt_tuning/qwen2_5_7b_aggressive",
+        #     "adapter_path": "training/prompt_tuning/results/qwen_qwen2.5-7b-instruct/aggressive",
+        #     "adapter_type": "prompt_tuning",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "Qwen/Qwen2.5-7B-Instruct",
+        #     "config_name": "prompt_tuning/qwen2_5_7b_moderate",
+        #     "adapter_path": "training/prompt_tuning/results/qwen_qwen2.5-7b-instruct/moderate",
+        #     "adapter_type": "prompt_tuning",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "Qwen/Qwen2.5-7B-Instruct",
+        #     "config_name": "prompt_tuning/qwen2_5_7b_conservative",
+        #     "adapter_path": "training/prompt_tuning/results/qwen_qwen2.5-7b-instruct/conservative",
+        #     "adapter_type": "prompt_tuning",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "Qwen/Qwen3-1.7b",
+        #     "config_name": "prompt_tuning/qwen3_1_7b_aggressive",
+        #     "adapter_path": "training/prompt_tuning/results/qwen_qwen3-1.7b/aggressive",
+        #     "adapter_type": "prompt_tuning",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "Qwen/Qwen3-1.7b",
+        #     "config_name": "prompt_tuning/qwen3_1_7b_moderate",
+        #     "adapter_path": "training/prompt_tuning/results/qwen_qwen3-1.7b/moderate",
+        #     "adapter_type": "prompt_tuning",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "Qwen/Qwen3-1.7b",
+        #     "config_name": "prompt_tuning/qwen3_1_7b_conservative",
+        #     "adapter_path": "training/prompt_tuning/results/qwen_qwen3-1.7b/conservative",
+        #     "adapter_type": "prompt_tuning",
+        #     "quantize": True,
+        # },
         # {
         #     "model_name": "Qwen/Qwen3-4b",
-        #     "config_name": "qwen3_4b_ultra_conservative",
-        #     "adapter_path": "training/qlora/results/qwen_qwen3-4b/ultra_conservative",
-        #     "adapter_type": "lora",
+        #     "config_name": "prompt_tuning/qwen3_4b_aggressive",
+        #     "adapter_path": "training/prompt_tuning/results/qwen_qwen3-4b/aggressive",
+        #     "adapter_type": "prompt_tuning",
         #     "quantize": True,
         # },
-        #  {
+        # {
         #     "model_name": "Qwen/Qwen3-4b",
-        #     "config_name": "qwen3_4b_base-no-examples",
-        #     "adapter_path": None,
-        #     "adapter_type": "none",
+        #     "config_name": "prompt_tuning/qwen3_4b_moderate",
+        #     "adapter_path": "training/prompt_tuning/results/qwen_qwen3-4b/moderate",
+        #     "adapter_type": "prompt_tuning",
         #     "quantize": True,
         # },
-        ### PROMPT TUNING
-        {
-            "model_name": "Qwen/Qwen3-1.7b",
-            "config_name": "prompt_tuning/qwen3_1_7b_aggressive",
-            "adapter_path": "training/prompt_tuning/results/qwen_qwen3-1.7b/aggressive",
-            "adapter_type": "prompt_tuning",
-            "quantize": True,
-        },
+        # {
+        #     "model_name": "Qwen/Qwen3-4b",
+        #     "config_name": "prompt_tuning/qwen3_4b_conservative",
+        #     "adapter_path": "training/prompt_tuning/results/qwen_qwen3-4b/conservative",
+        #     "adapter_type": "prompt_tuning",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "Qwen/Qwen3-4b",
+        #     "config_name": "prompt_tuning/qwen3_4b_ultra_conservative",
+        #     "adapter_path": "training/prompt_tuning/results/qwen_qwen3-4b/ultra_conservative",
+        #     "adapter_type": "prompt_tuning",
+        #     "quantize": True,
+        # },
+        # Google Gemma models
+        # {
+        #     "model_name": "google/gemma-3-1b-it",
+        #     "config_name": "prompt_tuning/gemma3_1b_aggressive",
+        #     "adapter_path": "training/prompt_tuning/results/google_gemma-3-1b-it/aggressive",
+        #     "adapter_type": "prompt_tuning",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "google/gemma-3-1b-it",
+        #     "config_name": "prompt_tuning/gemma3_1b_moderate",
+        #     "adapter_path": "training/prompt_tuning/results/google_gemma-3-1b-it/moderate",
+        #     "adapter_type": "prompt_tuning",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "google/gemma-3-1b-it",
+        #     "config_name": "prompt_tuning/gemma3_1b_conservative",
+        #     "adapter_path": "training/prompt_tuning/results/google_gemma-3-1b-it/conservative",
+        #     "adapter_type": "prompt_tuning",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "google/gemma-3-4b-it",
+        #     "config_name": "prompt_tuning/gemma3_4b_aggressive",
+        #     "adapter_path": "training/prompt_tuning/results/google_gemma-3-4b-it/aggressive",
+        #     "adapter_type": "prompt_tuning",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "google/gemma-3-4b-it",
+        #     "config_name": "prompt_tuning/gemma3_4b_moderate",
+        #     "adapter_path": "training/prompt_tuning/results/google_gemma-3-4b-it/moderate",
+        #     "adapter_type": "prompt_tuning",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "google/gemma-3-4b-it",
+        #     "config_name": "prompt_tuning/gemma3_4b_conservative",
+        #     "adapter_path": "training/prompt_tuning/results/google_gemma-3-4b-it/conservative",
+        #     "adapter_type": "prompt_tuning",
+        #     "quantize": True,
+        # },
+        # Meta Llama models
+        # {
+        #     "model_name": "meta-llama/Llama-3.2-3B-Instruct",
+        #     "config_name": "prompt_tuning/llama3_2_3b_aggressive",
+        #     "adapter_path": "training/prompt_tuning/results/meta-llama_llama-3.2-3b-instruct/aggressive",
+        #     "adapter_type": "prompt_tuning",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "meta-llama/Llama-3.2-3B-Instruct",
+        #     "config_name": "prompt_tuning/llama3_2_3b_moderate",
+        #     "adapter_path": "training/prompt_tuning/results/meta-llama_llama-3.2-3b-instruct/moderate",
+        #     "adapter_type": "prompt_tuning",
+        #     "quantize": True,
+        # },
+        # {
+        #     "model_name": "meta-llama/Llama-3.2-3B-Instruct",
+        #     "config_name": "prompt_tuning/llama3_2_3b_conservative",
+        #     "adapter_path": "training/prompt_tuning/results/meta-llama_llama-3.2-3b-instruct/conservative",
+        #     "adapter_type": "prompt_tuning",
+        #     "quantize": True,
+        # },
     ]
-
     evaluate_specific_models(
         model_configs=model_configs,
         datasets_to_evaluate="test",
-        repeats=1,
+        repeats=3,
         # max_docs=3,
         max_len=5000,
     )

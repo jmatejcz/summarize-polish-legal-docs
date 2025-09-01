@@ -7,14 +7,14 @@ echo ""
 # Define models to test
 MODELS=(
     "google/gemma-3-4b-it"
-    "google/gemma-3-1b-it"
-    "Qwen/Qwen3-4B"
-    "Qwen/Qwen3-1.7B"
-    "speakleash/Bielik-4.5B-v3.0-Instruct"
-    "speakleash/Bielik-1.5B-v3.0-Instruct"
+    # "google/gemma-3-1b-it"
+    # "Qwen/Qwen3-4B"
+    # "Qwen/Qwen3-1.7B"
+    # "speakleash/Bielik-4.5B-v3.0-Instruct"
+    # "speakleash/Bielik-1.5B-v3.0-Instruct"
     "CohereLabs/c4ai-command-r7b-12-2024"
     # "mistralai/Mistral-7B-Instruct-v0.3"
-    "meta-llama/Llama-3.2-3B-Instruct"
+    # "meta-llama/Llama-3.2-3B-Instruct"
 )
 
 # Define configurations to test
@@ -42,13 +42,13 @@ for MODEL in "${MODELS[@]}"; do
     echo ""
     
     for config in "${CONFIGS[@]}"; do
-        IFS=':' read -r name num_tokens epochs lr grad_steps batch_size val_split <<< "$config"
+        IFS=':' read -r name num_tokens epochs lr grad_steps<<< "$config"
         
         EXPERIMENT_DIR="${RESULT_DIR}/${MODEL_DIR}/${name}"
         
         echo "🔧 Training: ${MODEL_DIR}/${name}"
         echo " Config: tokens=$num_tokens, epochs=$epochs, lr=$lr"
-        echo " Batch size=$batch_size, grad_steps=$grad_steps, val_split=$val_split"
+        echo " grad_steps=$grad_steps"
         
         # Train this model+config combination
         python3 training/prompt_tuning/train_models.py \

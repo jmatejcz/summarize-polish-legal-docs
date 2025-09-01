@@ -79,62 +79,6 @@ class BaseDataset(Dataset):
         }
 
 
-def prepare_datasets(
-    train_data,
-    dataset_class,
-    tokenizer,
-    max_length,
-    system_prompt,
-    val_split=0.1,
-    seed=42,
-    **kwargs,
-):
-    """Common dataset preparation logic"""
-    if val_split > 0:
-        import random
-
-        random.seed(seed)
-        random.shuffle(train_data)
-
-        split_idx = int(len(train_data) * (1 - val_split))
-        train_examples = train_data[:split_idx]
-        eval_examples = train_data[split_idx:]
-    else:
-        train_examples = train_data
-        eval_examples = []
-
-    logger.info(
-        f"Split data: {len(train_examples)} train, {len(eval_examples)} eval examples"
-    )
-
-    train_dataset = dataset_class(
-        train_examples, tokenizer, max_length, system_prompt, **kwargs
-    )
-
-    eval_dataset = None
-    if len(eval_examples) > 0:
-        eval_dataset = dataset_class(
-            eval_examples, tokenizer, max_length, system_prompt, **kwargs
-        )
-
-    return train_dataset, eval_dataset
-
-
-def save_training_info(output_path, model_name, config, metrics, train_samples):
-    """Save training information to JSON file"""
-    import json
-
-    training_info = {
-        "model_name": model_name,
-        "config": config,
-        "training_metrics": metrics,
-        "train_samples": train_samples,
-    }
-
-    with open(output_path / "training_info.json", "w") as f:
-        json.dump(training_info, f, indent=2)
-
-
 class BasePEFTTrainer(ABC):
     """Base class for Parameter Efficient Fine Tuning trainers"""
 
