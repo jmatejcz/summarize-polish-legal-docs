@@ -24,7 +24,6 @@ except LookupError:
     nltk.download("wordnet")
 
 
-# Default paths - can be overridden
 DEFAULT_PATHS = {
     "train_documents": "data/training/train/documents",
     "train_summaries": "data/training/train/summaries",

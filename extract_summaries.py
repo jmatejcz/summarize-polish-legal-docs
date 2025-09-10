@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-"""
-Script to extract generated summaries from JSON evaluation results and save them to separate text files.
-Supports processing multiple model directories with test_evaluation_results.json files.
-"""
-
 import json
 import os
 import argparse
@@ -287,7 +281,6 @@ Examples:
 
     input_path = Path(args.input_path)
 
-    # Determine if input is a directory or a single JSON file
     if input_path.is_dir():
         # Process directory
         process_qlora_directory(

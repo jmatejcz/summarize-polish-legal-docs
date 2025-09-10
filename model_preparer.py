@@ -7,6 +7,7 @@ from transformers import (
     BitsAndBytesConfig,
     Gemma3ForCausalLM,
 )
+
 import gc
 
 
@@ -105,12 +106,14 @@ class BaseModelPrepare(ABC):
 
         print(f"Loading base model: {self.model_name}")
         self.model_kwargs = {
-            "device_map": "auto",
+            "device_map": "cuda:0",
             "torch_dtype": torch.bfloat16,
         }
 
         if quantization_config:
             self.model_kwargs["quantization_config"] = quantization_config
+
+        self._load_base_model()
 
     @abstractmethod
     def _create_chat_messages(self, document_text: str) -> List[Dict[str, str]]:
@@ -166,7 +169,6 @@ class CommonModelPrepare(BaseModelPrepare):
 
     def __init__(self, model_name: str, quantize: bool = True, quantize_bits: int = 4):
         super().__init__(model_name, quantize, quantize_bits)
-        self._load_base_model()
 
     def _create_chat_messages(self, document_text: str) -> List[Dict[str, str]]:
         """Create chat messages for standard models"""
@@ -193,7 +195,8 @@ class CommonModelPrepare(BaseModelPrepare):
         )
 
     def _apply_chat_template(self, messages: List[Dict[str, str]]) -> str:
-
+        if not self.tokenizer:
+            raise ValueError("Tokenizer not laoded")
         if "qwen3" in self.model_name.lower():
             return self.tokenizer.apply_chat_template(
                 messages,
@@ -214,7 +217,6 @@ class GemmaModelPrepare(BaseModelPrepare):
 
     def __init__(self, model_name: str, quantize: bool = True, quantize_bits: int = 4):
         super().__init__(model_name, quantize, quantize_bits)
-        self._load_base_model()
 
     def _create_chat_messages(self, document_text: str):
         """Create chat messages for Gemma models (combine system and user)"""
@@ -252,6 +254,7 @@ class GemmaModelPrepare(BaseModelPrepare):
         return base_chat
 
     def _load_base_model(self):
+        # self.model_kwargs["attn_implementation"] = "eager"
         self.model = Gemma3ForCausalLM.from_pretrained(
             self.model_name,
             **self.model_kwargs,
@@ -259,6 +262,8 @@ class GemmaModelPrepare(BaseModelPrepare):
 
     def _apply_chat_template(self, messages: List[Dict[str, str]]) -> str:
         """Apply chat template for Gemma models"""
+        if not self.tokenizer:
+            raise ValueError("Tokenizer not laoded")
         return self.tokenizer.apply_chat_template(
             messages,
             tokenize=False,
