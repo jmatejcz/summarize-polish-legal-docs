@@ -21,3 +21,5 @@ data.zip
 __pycache__/
 
 settings.json
+
+summaries/
